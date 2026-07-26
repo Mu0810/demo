@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { quote, formatUSD } from '../pricing';
+import { quote, formatUSD, WEEKEND_MULTIPLIER, TAX_RATE } from '../pricing';
 import { addDays } from '../dates';
 import type { Suite } from '../../types';
 
@@ -96,5 +96,19 @@ describe('quote', () => {
 describe('formatUSD', () => {
   it('formats with no decimals and a thousands separator', () => {
     expect(formatUSD(3696)).toBe('$3,696');
+  });
+});
+
+describe('advertised rates match charged rates', () => {
+  it('derives the display constants from the integer arithmetic', () => {
+    // If these were hand-written they could drift from WEEKEND_CENTS/TAX_PERCENT,
+    // and the UI would advertise a rate the guest is not actually charged.
+    expect(WEEKEND_MULTIPLIER).toBe(1.15);
+    expect(TAX_RATE).toBe(0.12);
+
+    // Prove they describe the real arithmetic rather than sitting beside it.
+    const oneFriday = quote(suite, { checkIn: '2026-08-14', checkOut: '2026-08-15' });
+    expect(oneFriday.subtotal).toBe(Math.round(suite.rate * WEEKEND_MULTIPLIER));
+    expect(oneFriday.tax).toBe(Math.round(oneFriday.subtotal * TAX_RATE));
   });
 });

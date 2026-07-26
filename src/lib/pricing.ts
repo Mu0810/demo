@@ -1,12 +1,8 @@
 import type { DateRange, Suite } from '../types';
 import { isWeekendNight, nightsIn } from './dates';
 
-/** Exported for UI copy ("15% weekend rate", "12% tax") — not used for arithmetic. */
-export const WEEKEND_MULTIPLIER = 1.15;
-export const TAX_RATE = 0.12;
-
 /**
- * Integer equivalents, used for the actual money maths.
+ * Integer cents, used for the actual money maths.
  *
  * `rate * 1.15` is not exact in binary: `850 * 1.15 === 977.4999999999999`,
  * which `Math.round` takes DOWN to 977 and silently undercharges by a dollar.
@@ -16,6 +12,14 @@ export const TAX_RATE = 0.12;
 const WEEKEND_CENTS = 115;
 const MIDWEEK_CENTS = 100;
 const TAX_PERCENT = 12;
+
+/**
+ * Derived from the integer constants above, never hand-written, so UI copy can
+ * never advertise a different rate from the one actually charged. Both
+ * divisions are exact in IEEE-754 (115/100 === 1.15, 12/100 === 0.12).
+ */
+export const WEEKEND_MULTIPLIER = WEEKEND_CENTS / MIDWEEK_CENTS;
+export const TAX_RATE = TAX_PERCENT / 100;
 
 export type Quote = {
   nights: number;
