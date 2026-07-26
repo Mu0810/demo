@@ -547,7 +547,10 @@ export function morphTransition(reduced: boolean) {
   return reduced ? { duration: 0 } : { duration: 0.8, ease: EASE_MORPH };
 }
 
-export function fade(reduced: boolean, duration = DURATION.base) {
+// `duration: number` must be annotated explicitly. DURATION is `as const`, so
+// an inferred default would type the parameter as the literal `0.7` and reject
+// every other value — including DURATION.fast and DURATION.hero.
+export function fade(reduced: boolean, duration: number = DURATION.base) {
   return reduced ? { duration: 0 } : { duration, ease: EASE_OUT };
 }
 
