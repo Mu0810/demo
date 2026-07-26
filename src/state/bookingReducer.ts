@@ -53,11 +53,17 @@ export function bookingReducer(state: BookingState, action: BookingAction): Book
     case 'CLEAR_DATES':
       return { ...state, checkIn: null, checkOut: null };
 
-    case 'SET_GUESTS':
+    case 'SET_GUESTS': {
+      // NaN must be rejected before clamping: Math.min(4, Math.max(1, NaN)) is
+      // NaN, and NaN survives downstream unnoticed — `NaN > maxGuests` is false
+      // so validation raises nothing, and JSON.stringify turns it into null.
+      // Reachable the moment a UI does Number(input.value) on a cleared field.
+      if (!Number.isFinite(action.guests)) return { ...state, guests: 1 };
       return {
         ...state,
         guests: Math.min(MAX_SUITE_CAPACITY, Math.max(1, Math.floor(action.guests))),
       };
+    }
 
     case 'SET_GUEST_NAME':
       return { ...state, guestName: action.value };

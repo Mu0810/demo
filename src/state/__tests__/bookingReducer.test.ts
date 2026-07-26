@@ -76,9 +76,27 @@ describe('bookingReducer', () => {
   });
 
   it('clears dates', () => {
+    // Both ends must be set first. With only a check-in, checkOut is already
+    // null and the second assertion proves nothing — a CLEAR_DATES that forgot
+    // to clear checkOut would pass.
     let s = bookingReducer(base, { type: 'PICK_DATE', date: '2026-08-17' });
+    s = bookingReducer(s, { type: 'PICK_DATE', date: '2026-08-20' });
+    expect(s.checkIn).toBe('2026-08-17');
+    expect(s.checkOut).toBe('2026-08-20');
+
     s = bookingReducer(s, { type: 'CLEAR_DATES' });
     expect(s.checkIn).toBeNull();
     expect(s.checkOut).toBeNull();
+  });
+
+  it('rejects a non-finite guest count instead of storing NaN', () => {
+    // NaN would pass validation silently (NaN > maxGuests is false) and become
+    // null in storage.
+    expect(bookingReducer(base, { type: 'SET_GUESTS', guests: NaN }).guests).toBe(1);
+    expect(bookingReducer(base, { type: 'SET_GUESTS', guests: Infinity }).guests).toBe(1);
+  });
+
+  it('floors a fractional guest count', () => {
+    expect(bookingReducer(base, { type: 'SET_GUESTS', guests: 2.9 }).guests).toBe(2);
   });
 });
