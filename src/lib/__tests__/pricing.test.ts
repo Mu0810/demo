@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { quote, formatUSD } from '../pricing';
+import { addDays } from '../dates';
 import type { Suite } from '../../types';
 
 const suite: Suite = {
@@ -57,11 +58,38 @@ describe('quote', () => {
   });
 
   it('rounds to whole dollars', () => {
+    // A Friday night, so the uplift produces a genuinely fractional amount:
+    // 333 * 1.15 = 382.95. A midweek night would be an integer already and
+    // this assertion would pass even with the rounding removed.
     const odd: Suite = { ...suite, rate: 333 };
-    const q = quote(odd, { checkIn: '2026-08-17', checkOut: '2026-08-18' });
+    const q = quote(odd, { checkIn: '2026-08-14', checkOut: '2026-08-15' });
     expect(Number.isInteger(q.subtotal)).toBe(true);
     expect(Number.isInteger(q.tax)).toBe(true);
     expect(Number.isInteger(q.total)).toBe(true);
+    expect(q.subtotal).toBe(383);
+  });
+
+  it('computes the weekend uplift exactly for rates that are inexact in binary', () => {
+    // 850 is Aurelia's real rate. 850 * 1.15 evaluates to 977.4999999999999 in
+    // floating point, which rounds DOWN to 977 and undercharges by a dollar.
+    // Integer-cents arithmetic must give 978.
+    const aurelia: Suite = { ...suite, rate: 850 };
+    const q = quote(aurelia, { checkIn: '2026-08-14', checkOut: '2026-08-15' });
+    expect(q.subtotal).toBe(978);
+    expect(q.tax).toBe(117);
+    expect(q.total).toBe(1095);
+  });
+
+  it('always presents a breakdown that adds up', () => {
+    // The guest must never see subtotal + tax disagree with total.
+    for (const rate of [333, 760, 850, 980, 1150, 1850, 2400]) {
+      for (const nights of [1, 2, 3, 7, 14]) {
+        const s: Suite = { ...suite, rate };
+        const q = quote(s, { checkIn: '2026-08-14', checkOut: addDays('2026-08-14', nights) });
+        expect(q.subtotal + q.tax).toBe(q.total);
+        expect(q.nights).toBe(nights);
+      }
+    }
   });
 });
 

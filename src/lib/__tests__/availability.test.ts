@@ -31,6 +31,30 @@ describe('availability', () => {
     expect(isNightAvailable('celeste', '2026-09-13')).toBe(false);
   });
 
+  it('applies the Sunday rule ON TOP OF the hash, not instead of it', () => {
+    // If the Sunday closure replaced the hash, celeste would be open on every
+    // non-Sunday. These are non-Sundays that the hash blocks.
+    expect(isNightAvailable('celeste', '2026-09-04')).toBe(false);
+    expect(isNightAvailable('celeste', '2026-09-10')).toBe(false);
+    expect(isNightAvailable('celeste', '2026-09-23')).toBe(false);
+  });
+
+  it('matches known golden values, pinning the hash and the modulus', () => {
+    // These lock the exact rule: FNV-1a offset basis 0x811c9dc5, prime
+    // 0x01000193, key `${suiteId}:${iso}`, and `% 7`. Changing the modulus to 5
+    // or 8, altering the prime, or reformatting the key all move these dates.
+    // Availability must be identical on every machine and every run.
+    expect(isNightAvailable('aurelia', '2026-09-14')).toBe(false);
+    expect(isNightAvailable('aurelia', '2026-09-26')).toBe(false);
+    expect(isNightAvailable('aurelia', '2026-09-01')).toBe(true);
+    expect(isNightAvailable('meridian', '2026-09-03')).toBe(false);
+    expect(isNightAvailable('meridian', '2026-09-16')).toBe(false);
+    expect(isNightAvailable('meridian', '2026-09-01')).toBe(true);
+    expect(isNightAvailable('atrium-loft', '2026-09-24')).toBe(false);
+    expect(isNightAvailable('atrium-loft', '2026-09-30')).toBe(false);
+    expect(isNightAvailable('atrium-loft', '2026-09-01')).toBe(true);
+  });
+
   it('does not close other suites on Sundays as a rule', () => {
     const sundays = ['2026-09-06', '2026-09-13', '2026-09-20', '2026-09-27'];
     const open = sundays.filter((d) => isNightAvailable('aurelia', d));
