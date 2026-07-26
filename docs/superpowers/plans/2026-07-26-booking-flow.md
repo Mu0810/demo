@@ -13,6 +13,8 @@
 - Project root: `/Users/hello/skills/meridian-reserve` — never write outside it
 - Exact pinned versions, no ranges: `react@19.2.8`, `react-dom@19.2.8`, `motion@12.42.2`, `lenis@1.3.25`, `vite@8.1.5`, `@vitejs/plugin-react@6.0.4`, `typescript@7.0.2`, `vitest@4.1.10`, `jsdom@29.1.1`, `@testing-library/react@16.3.2`, `@testing-library/jest-dom@7.0.0`, `@types/react@19.2.8`, `@types/react-dom@19.2.3`
 - **Corrected during Task 1:** `@types/react-dom` is pinned to `19.2.3`, not `19.2.8`. That version was never published — the `19.2.x` line ends at `19.2.3`. The two `@types` packages version independently and do not track each other. Do not "align" them.
+- **`src/vite-env.d.ts` exists and must not be deleted.** Added during Task 2. It contains only `/// <reference types="vite/client" />`, which is what makes CSS side-effect imports type-check. Without it every `import './x.css'` fails with TS2882 — at build time only, never in `npm run dev`. The Task 1 scaffold omitted it; `tsconfig.json`'s `"types": ["vitest/globals"]` blocks automatic `vite/client` pickup.
+- **`noUnusedLocals` and `noUnusedParameters` are on.** An unused import is a build failure (TS6133) that `npm test` will NOT catch, because Vitest transpiles without type-checking. Always run `npm run build` before declaring a task done, and import only what you use.
 - **Node 20 is supported.** `@testing-library/jest-dom@7.0.0` declares `node>=22` and npm emits an EBADENGINE warning on Node 20.20.2. This was tested empirically against every matcher the plan uses (`toBeInTheDocument`, `toHaveAttribute`, `toHaveTextContent`, `toHaveFocus`, `toBeDisabled`, `not.toBeInTheDocument`) and all pass. Ignore the warning; do not downgrade jest-dom.
 - Palette, exact values: bg `#0A0A0B`, panel `#16161A`, gold `#C9A227`, primary text `#F2EFE9`, body `#CFCBC4`, caption `#9C978F`
 - Display type stack: `'Didot', 'Bodoni 72', 'Bodoni MT', Garamond, 'Times New Roman', serif`
@@ -346,7 +348,7 @@ button {
 
 ```tsx
 // src/motion/__tests__/useReducedMotion.test.tsx
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useReducedMotion } from '../useReducedMotion';
 import { morphTransition, staggerParent } from '../tokens';
@@ -2375,7 +2377,9 @@ Expected: FAIL — cannot resolve `../Calendar`.
 
 ```tsx
 import { useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { addDays, fromISO, toISO, todayISO } from '../lib/dates';
+// Note: toISO is deliberately NOT imported — Calendar never calls it, and
+// `noUnusedLocals` turns an unused import into a build failure (TS6133).
+import { addDays, fromISO, todayISO } from '../lib/dates';
 import { isNightAvailable } from '../lib/availability';
 import './Calendar.css';
 
