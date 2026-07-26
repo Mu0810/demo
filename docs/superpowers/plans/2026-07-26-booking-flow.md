@@ -2086,8 +2086,15 @@ Unknown paths resolve to `{ name: 'landing' }` rather than throwing, which is wh
 
 ```ts
 // src/state/__tests__/history.test.ts
-import { describe, it, expect } from 'vitest';
-import { parsePath, viewToPath } from '../history';
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  parsePath,
+  viewToPath,
+  pushView,
+  replaceView,
+  onPopState,
+  type View,
+} from '../history';
 
 describe('parsePath', () => {
   it('parses the landing page', () => {
@@ -2135,6 +2142,76 @@ describe('viewToPath', () => {
     for (const v of views) {
       expect(parsePath(viewToPath(v))).toEqual(v);
     }
+  });
+
+  it('maps landing to exactly the root path', () => {
+    // The round-trip test cannot pin this: any unrecognised path also parses
+    // back to landing, so '/home' would round-trip just as happily.
+    expect(viewToPath({ name: 'landing' })).toBe('/');
+  });
+
+  it('only treats a literal /reserve segment as the reserve view', () => {
+    expect(parsePath('/suites/aurelia/anything-else')).toEqual({ name: 'landing' });
+    expect(parsePath('/suites/aurelia/reserve')).toEqual({
+      name: 'reserve',
+      suiteId: 'aurelia',
+    });
+  });
+});
+
+describe('browser history integration', () => {
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('pushView adds a history entry and changes the path', () => {
+    const before = window.history.length;
+    pushView({ name: 'suite', suiteId: 'aurelia' });
+
+    expect(window.location.pathname).toBe('/suites/aurelia');
+    expect(window.history.length).toBeGreaterThan(before);
+  });
+
+  it('replaceView changes the path without adding an entry', () => {
+    const before = window.history.length;
+    replaceView({ name: 'suite', suiteId: 'celeste' });
+
+    expect(window.location.pathname).toBe('/suites/celeste');
+    expect(window.history.length).toBe(before);
+  });
+
+  it('onPopState reports the view parsed from the current path', () => {
+    const seen: View[] = [];
+    const unsubscribe = onPopState((v) => seen.push(v));
+
+    window.history.replaceState({}, '', '/suites/meridian');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+
+    expect(seen).toEqual([{ name: 'suite', suiteId: 'meridian' }]);
+    unsubscribe();
+  });
+
+  it('onPopState stops reporting after unsubscribe', () => {
+    const seen: View[] = [];
+    const unsubscribe = onPopState((v) => seen.push(v));
+    unsubscribe();
+
+    window.history.replaceState({}, '', '/suites/aurelia');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+
+    expect(seen).toEqual([]);
+  });
+
+  it('parses the pathname only, never the full href', () => {
+    // Reading location.href here would split the origin into segments and every
+    // back/forward would land on the landing view.
+    window.history.replaceState({}, '', '/reservation/mr-abc234');
+    const seen: View[] = [];
+    const unsubscribe = onPopState((v) => seen.push(v));
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    unsubscribe();
+
+    expect(seen).toEqual([{ name: 'confirmation', code: 'MR-ABC234' }]);
   });
 });
 ```
@@ -2322,10 +2399,28 @@ describe('bookingReducer', () => {
   });
 
   it('clears dates', () => {
+    // Both ends must be set first. With only a check-in, checkOut is already
+    // null and the second assertion proves nothing — a CLEAR_DATES that forgot
+    // to clear checkOut would pass.
     let s = bookingReducer(base, { type: 'PICK_DATE', date: '2026-08-17' });
+    s = bookingReducer(s, { type: 'PICK_DATE', date: '2026-08-20' });
+    expect(s.checkIn).toBe('2026-08-17');
+    expect(s.checkOut).toBe('2026-08-20');
+
     s = bookingReducer(s, { type: 'CLEAR_DATES' });
     expect(s.checkIn).toBeNull();
     expect(s.checkOut).toBeNull();
+  });
+
+  it('rejects a non-finite guest count instead of storing NaN', () => {
+    // NaN would pass validation silently (NaN > maxGuests is false) and become
+    // null in storage.
+    expect(bookingReducer(base, { type: 'SET_GUESTS', guests: NaN }).guests).toBe(1);
+    expect(bookingReducer(base, { type: 'SET_GUESTS', guests: Infinity }).guests).toBe(1);
+  });
+
+  it('floors a fractional guest count', () => {
+    expect(bookingReducer(base, { type: 'SET_GUESTS', guests: 2.9 }).guests).toBe(2);
   });
 });
 ```
@@ -2393,11 +2488,17 @@ export function bookingReducer(state: BookingState, action: BookingAction): Book
     case 'CLEAR_DATES':
       return { ...state, checkIn: null, checkOut: null };
 
-    case 'SET_GUESTS':
+    case 'SET_GUESTS': {
+      // NaN must be rejected before clamping: Math.min(4, Math.max(1, NaN)) is
+      // NaN, and NaN survives downstream unnoticed — `NaN > maxGuests` is false
+      // so validation raises nothing, and JSON.stringify turns it into null.
+      // Reachable the moment a UI does Number(input.value) on a cleared field.
+      if (!Number.isFinite(action.guests)) return { ...state, guests: 1 };
       return {
         ...state,
         guests: Math.min(MAX_SUITE_CAPACITY, Math.max(1, Math.floor(action.guests))),
       };
+    }
 
     case 'SET_GUEST_NAME':
       return { ...state, guestName: action.value };
@@ -2457,10 +2558,89 @@ export function useBooking(): BookingContextValue {
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 5: Write the provider test**
 
-Run: `npm test -- bookingReducer`
-Expected: PASS — 12 tests.
+`BookingProvider` has behaviour that neither `tsc` nor the reducer tests can
+reach. Two mutations are invisible to both: swapping `checkIn`/`checkOut` when
+building `range` — which would invert every date range in the app — and
+`useBooking` silently returning `undefined` instead of throwing.
+
+```tsx
+// src/state/__tests__/BookingProvider.test.tsx
+import { describe, it, expect, beforeEach } from 'vitest';
+import { render, screen, act } from '@testing-library/react';
+import { BookingProvider, useBooking } from '../BookingProvider';
+
+function Probe() {
+  const { state, dispatch, range } = useBooking();
+  return (
+    <div>
+      <span data-testid="view">{state.view.name}</span>
+      <span data-testid="range">{range ? `${range.checkIn}..${range.checkOut}` : 'none'}</span>
+      <span data-testid="guests">{state.guests}</span>
+      <button onClick={() => dispatch({ type: 'PICK_DATE', date: '2026-08-17' })}>in</button>
+      <button onClick={() => dispatch({ type: 'PICK_DATE', date: '2026-08-20' })}>out</button>
+    </div>
+  );
+}
+
+describe('BookingProvider', () => {
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('seeds the view from the current URL', () => {
+    window.history.replaceState({}, '', '/suites/aurelia');
+    render(
+      <BookingProvider>
+        <Probe />
+      </BookingProvider>
+    );
+    expect(screen.getByTestId('view')).toHaveTextContent('suite');
+  });
+
+  it('falls back to landing for an unrecognised URL without throwing', () => {
+    window.history.replaceState({}, '', '/utter/nonsense');
+    render(
+      <BookingProvider>
+        <Probe />
+      </BookingProvider>
+    );
+    expect(screen.getByTestId('view')).toHaveTextContent('landing');
+  });
+
+  it('exposes range as none until both ends are chosen, in the right order', () => {
+    render(
+      <BookingProvider>
+        <Probe />
+      </BookingProvider>
+    );
+    expect(screen.getByTestId('range')).toHaveTextContent('none');
+
+    act(() => {
+      screen.getByRole('button', { name: 'in' }).click();
+    });
+    expect(screen.getByTestId('range')).toHaveTextContent('none');
+
+    act(() => {
+      screen.getByRole('button', { name: 'out' }).click();
+    });
+    // Order matters: a swapped range object would read '2026-08-20..2026-08-17'
+    // and invert every stay in the app.
+    expect(screen.getByTestId('range')).toHaveTextContent('2026-08-17..2026-08-20');
+  });
+
+  it('throws a clear error when used outside the provider', () => {
+    // Without the throw this is an undefined deref deep inside a view.
+    expect(() => render(<Probe />)).toThrow(/must be used inside BookingProvider/);
+  });
+});
+```
+
+- [ ] **Step 6: Run tests**
+
+Run: `npm test -- bookingReducer BookingProvider`
+Expected: PASS — 15 reducer tests and 4 provider tests.
 
 - [ ] **Step 6: Commit**
 
