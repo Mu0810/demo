@@ -1110,6 +1110,30 @@ describe('availability', () => {
     expect(isNightAvailable('celeste', '2026-09-13')).toBe(false);
   });
 
+  it('applies the Sunday rule ON TOP OF the hash, not instead of it', () => {
+    // If the Sunday closure replaced the hash, celeste would be open on every
+    // non-Sunday. These are non-Sundays that the hash blocks.
+    expect(isNightAvailable('celeste', '2026-09-04')).toBe(false);
+    expect(isNightAvailable('celeste', '2026-09-10')).toBe(false);
+    expect(isNightAvailable('celeste', '2026-09-23')).toBe(false);
+  });
+
+  it('matches known golden values, pinning the hash and the modulus', () => {
+    // These lock the exact rule: FNV-1a offset basis 0x811c9dc5, prime
+    // 0x01000193, key `${suiteId}:${iso}`, and `% 7`. Changing the modulus to 5
+    // or 8, altering the prime, or reformatting the key all move these dates.
+    // Availability must be identical on every machine and every run.
+    expect(isNightAvailable('aurelia', '2026-09-14')).toBe(false);
+    expect(isNightAvailable('aurelia', '2026-09-26')).toBe(false);
+    expect(isNightAvailable('aurelia', '2026-09-01')).toBe(true);
+    expect(isNightAvailable('meridian', '2026-09-03')).toBe(false);
+    expect(isNightAvailable('meridian', '2026-09-16')).toBe(false);
+    expect(isNightAvailable('meridian', '2026-09-01')).toBe(true);
+    expect(isNightAvailable('atrium-loft', '2026-09-24')).toBe(false);
+    expect(isNightAvailable('atrium-loft', '2026-09-30')).toBe(false);
+    expect(isNightAvailable('atrium-loft', '2026-09-01')).toBe(true);
+  });
+
   it('does not close other suites on Sundays as a rule', () => {
     const sundays = ['2026-09-06', '2026-09-13', '2026-09-20', '2026-09-27'];
     const open = sundays.filter((d) => isNightAvailable('aurelia', d));
@@ -1202,6 +1226,7 @@ git commit -m "feat: add deterministic availability rules"
 // src/lib/__tests__/pricing.test.ts
 import { describe, it, expect } from 'vitest';
 import { quote, formatUSD } from '../pricing';
+import { addDays } from '../dates';
 import type { Suite } from '../../types';
 
 const suite: Suite = {
@@ -1259,11 +1284,38 @@ describe('quote', () => {
   });
 
   it('rounds to whole dollars', () => {
+    // A Friday night, so the uplift produces a genuinely fractional amount:
+    // 333 * 1.15 = 382.95. A midweek night would be an integer already and
+    // this assertion would pass even with the rounding removed.
     const odd: Suite = { ...suite, rate: 333 };
-    const q = quote(odd, { checkIn: '2026-08-17', checkOut: '2026-08-18' });
+    const q = quote(odd, { checkIn: '2026-08-14', checkOut: '2026-08-15' });
     expect(Number.isInteger(q.subtotal)).toBe(true);
     expect(Number.isInteger(q.tax)).toBe(true);
     expect(Number.isInteger(q.total)).toBe(true);
+    expect(q.subtotal).toBe(383);
+  });
+
+  it('computes the weekend uplift exactly for rates that are inexact in binary', () => {
+    // 850 is Aurelia's real rate. 850 * 1.15 evaluates to 977.4999999999999 in
+    // floating point, which rounds DOWN to 977 and undercharges by a dollar.
+    // Integer-cents arithmetic must give 978.
+    const aurelia: Suite = { ...suite, rate: 850 };
+    const q = quote(aurelia, { checkIn: '2026-08-14', checkOut: '2026-08-15' });
+    expect(q.subtotal).toBe(978);
+    expect(q.tax).toBe(117);
+    expect(q.total).toBe(1095);
+  });
+
+  it('always presents a breakdown that adds up', () => {
+    // The guest must never see subtotal + tax disagree with total.
+    for (const rate of [333, 760, 850, 980, 1150, 1850, 2400]) {
+      for (const nights of [1, 2, 3, 7, 14]) {
+        const s: Suite = { ...suite, rate };
+        const q = quote(s, { checkIn: '2026-08-14', checkOut: addDays('2026-08-14', nights) });
+        expect(q.subtotal + q.tax).toBe(q.total);
+        expect(q.nights).toBe(nights);
+      }
+    }
   });
 });
 
@@ -1285,8 +1337,21 @@ Expected: FAIL — cannot resolve `../pricing`.
 import type { DateRange, Suite } from '../types';
 import { isWeekendNight, nightsIn } from './dates';
 
+/** Exported for UI copy ("15% weekend rate", "12% tax") — not used for arithmetic. */
 export const WEEKEND_MULTIPLIER = 1.15;
 export const TAX_RATE = 0.12;
+
+/**
+ * Integer equivalents, used for the actual money maths.
+ *
+ * `rate * 1.15` is not exact in binary: `850 * 1.15 === 977.4999999999999`,
+ * which `Math.round` takes DOWN to 977 and silently undercharges by a dollar.
+ * 850 is a real suite rate (Aurelia), so this is not hypothetical. Rates are
+ * whole dollars, so `rate * 115` is exact integer cents.
+ */
+const WEEKEND_CENTS = 115;
+const MIDWEEK_CENTS = 100;
+const TAX_PERCENT = 12;
 
 export type Quote = {
   nights: number;
@@ -1309,6 +1374,10 @@ export function formatUSD(n: number): string {
 /**
  * Order is fixed by spec: per-night uplift, then subtotal, then tax on the
  * uplifted subtotal. Taxing before the uplift would understate the total.
+ *
+ * All arithmetic runs in integer cents so no float tie can lose a dollar.
+ * `total` is derived as `subtotal + tax` rather than recomputed from cents, so
+ * the breakdown the guest sees always adds up to the figure they are charged.
  */
 export function quote(suite: Suite, range: DateRange): Quote {
   const nights = nightsIn(range);
@@ -1316,13 +1385,14 @@ export function quote(suite: Suite, range: DateRange): Quote {
     return { nights: 0, subtotal: 0, tax: 0, total: 0 };
   }
 
-  const subtotal = Math.round(
-    nights.reduce(
-      (sum, night) => sum + suite.rate * (isWeekendNight(night) ? WEEKEND_MULTIPLIER : 1),
-      0
-    )
+  const subtotalCents = nights.reduce(
+    (sum, night) => sum + suite.rate * (isWeekendNight(night) ? WEEKEND_CENTS : MIDWEEK_CENTS),
+    0
   );
-  const tax = Math.round(subtotal * TAX_RATE);
+  const taxCents = Math.round((subtotalCents * TAX_PERCENT) / 100);
+
+  const subtotal = Math.round(subtotalCents / 100);
+  const tax = Math.round(taxCents / 100);
 
   return { nights: nights.length, subtotal, tax, total: subtotal + tax };
 }
