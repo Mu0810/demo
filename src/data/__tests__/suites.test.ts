@@ -12,9 +12,15 @@ describe('SUITES', () => {
   });
 
   it('gives every suite a hero and exactly 3 gallery images', () => {
+    // The host check must cover the gallery too, not just the hero — otherwise
+    // 18 of the 24 URLs are unguarded against the https/unsplash constraint.
+    const UNSPLASH = /^https:\/\/images\.unsplash\.com\/photo-/;
     for (const s of SUITES) {
-      expect(s.hero).toMatch(/^https:\/\/images\.unsplash\.com\//);
+      expect(s.hero).toMatch(UNSPLASH);
       expect(s.gallery).toHaveLength(3);
+      for (const g of s.gallery) {
+        expect(g).toMatch(UNSPLASH);
+      }
     }
   });
 

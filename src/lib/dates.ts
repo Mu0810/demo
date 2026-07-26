@@ -22,15 +22,44 @@ export function addDays(iso: string, n: number): string {
   return toISO(d);
 }
 
+/**
+ * Today in the USER'S LOCAL calendar, not UTC.
+ *
+ * `toISO(new Date())` would read UTC fields, so for anyone west of UTC during
+ * their afternoon/evening it returns tomorrow's date — which would disable the
+ * guest's actual today in the calendar. Local fields are correct here precisely
+ * because "today" is a wall-clock question, unlike the stored range values.
+ */
 export function todayISO(): string {
-  return toISO(new Date());
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-/** The nights actually slept: check-in inclusive, check-out exclusive. */
+/** Strict zero-padded ISO calendar date, and a real day (rejects 2026-02-30). */
+export function isValidISO(iso: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  return toISO(fromISO(iso)) === iso;
+}
+
+/**
+ * The nights actually slept: check-in inclusive, check-out exclusive.
+ *
+ * Compares timestamps rather than strings. A string comparison here can never
+ * terminate when `checkOut` is a non-date whose first character sorts above
+ * '9' (`'unset'`, `'TBD'`, `'Invalid Date'`), because `addDays` always returns
+ * a digit-leading string — the loop then allocates until the heap dies. Invalid
+ * input returns an empty list instead.
+ */
 export function nightsIn(range: DateRange): string[] {
+  if (!isValidISO(range.checkIn) || !isValidISO(range.checkOut)) return [];
+
+  const end = fromISO(range.checkOut).getTime();
   const out: string[] = [];
   let cursor = range.checkIn;
-  while (cursor < range.checkOut) {
+  while (fromISO(cursor).getTime() < end) {
     out.push(cursor);
     cursor = addDays(cursor, 1);
   }
