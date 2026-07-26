@@ -1611,6 +1611,65 @@ describe('validateBooking', () => {
     expect(errors).toContain('TOO_MANY_GUESTS');
   });
 
+  it('accepts a check-in today', () => {
+    // Same-day arrival is the most common booking. Without this, tightening the
+    // comparison to `<=` would reject it and no test would notice.
+    const errors = validateBooking({
+      suite,
+      range: { checkIn: TODAY, checkOut: '2026-07-28' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(errors).not.toContain('PAST_CHECKIN');
+  });
+
+  it('does not blame availability when no dates have been chosen', () => {
+    // isSuiteAvailable returns false for an empty range as well as a blocked
+    // one, so without the `nights >= 1` guard a guest who has picked nothing is
+    // told the suite is unavailable.
+    const errors = validateBooking({
+      suite,
+      range: { checkIn: '', checkOut: '' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(errors).not.toContain('SUITE_UNAVAILABLE');
+    expect(errors).toContain('CHECKOUT_NOT_AFTER_CHECKIN');
+  });
+
+  it('pins the twelve-month boundary on both sides', () => {
+    // Exactly 12 months out is rejected; one day under is accepted. This holds
+    // the `>=`, the threshold value, and the direction all in place.
+    const atLimit = validateBooking({
+      suite,
+      range: { checkIn: '2027-07-26', checkOut: '2027-07-28' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(atLimit).toContain('TOO_FAR_AHEAD');
+
+    const justUnder = validateBooking({
+      suite,
+      range: { checkIn: '2027-07-25', checkOut: '2027-07-27' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(justUnder).not.toContain('TOO_FAR_AHEAD');
+  });
+
+  it('never reports TOO_FAR_AHEAD for a check-in in the past', () => {
+    // monthsBetween returns a negative number here. Wrapping it in Math.abs
+    // would turn a year-old date into a "too far ahead" error.
+    const errors = validateBooking({
+      suite,
+      range: { checkIn: '2025-07-26', checkOut: '2025-07-28' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(errors).toContain('PAST_CHECKIN');
+    expect(errors).not.toContain('TOO_FAR_AHEAD');
+  });
+
   it('has a human message for every error code', () => {
     const codes = [
       'PAST_CHECKIN',
@@ -1718,7 +1777,7 @@ git commit -m "feat: add booking validation rules"
 
 ```ts
 // src/lib/__tests__/code.test.ts
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { generateCode, CODE_ALPHABET } from '../code';
 
 describe('generateCode', () => {
@@ -1742,6 +1801,29 @@ describe('generateCode', () => {
     for (let i = 0; i < 50; i++) {
       expect(generateCode(taken)).not.toBe(first);
     }
+  });
+
+  it('really consults the taken set, proven with a deterministic RNG', () => {
+    // The test above cannot fail by accident: a random 32^6 draw collides with
+    // the one taken code at p ~ 1e-9, so deleting the collision check survives
+    // it. Pinning Math.random makes the first candidate collide for certain.
+    // First 6 draws -> index 0 ('2') => MR-222222, which is taken.
+    // Next 6 draws  -> index 1 ('3') => MR-333333, which is free.
+    let call = 0;
+    const spy = vi.spyOn(Math, 'random').mockImplementation(() => (call++ < 6 ? 0 : 1 / 32));
+
+    expect(generateCode(new Set(['MR-222222']))).toBe('MR-333333');
+
+    spy.mockRestore();
+  });
+
+  it('returns the first candidate when nothing is taken', () => {
+    let call = 0;
+    const spy = vi.spyOn(Math, 'random').mockImplementation(() => (call++ < 6 ? 0 : 1 / 32));
+
+    expect(generateCode()).toBe('MR-222222');
+
+    spy.mockRestore();
   });
 });
 ```
@@ -1836,6 +1918,32 @@ describe('reservation storage', () => {
       JSON.stringify([sample, { code: 'MR-BAD222' }])
     );
     expect(loadReservations()).toHaveLength(1);
+  });
+
+  it('keeps earlier reservations when another is saved', () => {
+    // Without this, replacing the merge with `[reservation]` — wiping every
+    // prior booking on each save — passes the whole suite. Silent data loss.
+    saveReservation(sample);
+    saveReservation({ ...sample, code: 'MR-DEF345', guestName: 'B Guest' });
+
+    const all = loadReservations();
+    expect(all).toHaveLength(2);
+    expect(findReservation('MR-ABC234')?.guestName).toBe('A Guest');
+    expect(findReservation('MR-DEF345')?.guestName).toBe('B Guest');
+  });
+
+  it('overwrites in place when the same code is saved twice', () => {
+    saveReservation(sample);
+    saveReservation({ ...sample, guestName: 'Renamed' });
+
+    expect(loadReservations()).toHaveLength(1);
+    expect(findReservation('MR-ABC234')?.guestName).toBe('Renamed');
+  });
+
+  it('reports storage as persistent after a successful write', () => {
+    // Pins the true case; otherwise a hardcoded `return false` passes.
+    saveReservation(sample);
+    expect(isPersistent()).toBe(true);
   });
 
   it('survives localStorage throwing on write, as in Safari private mode', () => {
