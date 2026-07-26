@@ -149,6 +149,11 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./src/vitest.setup.ts'],
+    // A `spy.mockRestore()` at the end of a test body is skipped when an
+    // assertion throws, leaving the stub installed for later tests in the file.
+    // This makes restoration structural rather than positional — it matters most
+    // for the component suites, which stub far more than Math.random.
+    restoreMocks: true,
   },
 });
 ```
