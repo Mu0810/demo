@@ -158,6 +158,48 @@ export default defineConfig({
 ```ts
 import '@testing-library/jest-dom/vitest';
 
+/**
+ * jsdom's `localStorage` is a proxy-backed platform object with a named-property
+ * setter, so `Object.defineProperty(localStorage, 'setItem', ...)` is routed to
+ * that setter: it stores an ITEM under the key "setItem" and leaves the real
+ * method untouched. `vi.spyOn(window.localStorage, 'setItem')` therefore reports
+ * success while doing nothing, and a test cannot simulate the write failure
+ * Safari private browsing produces — the exact case the storage fallback exists
+ * for. Swapping in a plain object of the same shape lets spies attach normally.
+ *
+ * Verified against the installed jsdom: after defineProperty "succeeds", the own
+ * descriptor is still undefined, `setItem` does not throw, and the mock function
+ * is retrievable via `getItem('setItem')`.
+ */
+const localStorageBacking = new Map<string, string>();
+const localStorageShim = {
+  get length(): number {
+    return localStorageBacking.size;
+  },
+  key(index: number): string | null {
+    return Array.from(localStorageBacking.keys())[index] ?? null;
+  },
+  getItem(key: string): string | null {
+    const k = String(key);
+    return localStorageBacking.has(k) ? (localStorageBacking.get(k) as string) : null;
+  },
+  setItem(key: string, value: string): void {
+    localStorageBacking.set(String(key), String(value));
+  },
+  removeItem(key: string): void {
+    localStorageBacking.delete(String(key));
+  },
+  clear(): void {
+    localStorageBacking.clear();
+  },
+};
+
+Object.defineProperty(window, 'localStorage', {
+  value: localStorageShim as unknown as Storage,
+  configurable: true,
+  writable: true,
+});
+
 // jsdom does not implement matchMedia; Motion and useReducedMotion both need it.
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
@@ -1730,8 +1772,9 @@ export function generateCode(taken: Set<string> = new Set()): string {
     const code = `MR-${randomBody()}`;
     if (!taken.has(code)) return code;
   }
-  // Exhausted attempts: fall back to a timestamp-suffixed code, still in-alphabet.
-  return `MR-${randomBody(3)}${randomBody(3)}`;
+  // Unreachable in practice. Emits one more in-alphabet code rather than
+  // throwing, so a caller can never be left without a reference to show.
+  return `MR-${randomBody()}`;
 }
 ```
 
@@ -1819,7 +1862,13 @@ import type { Reservation } from '../types';
 
 const KEY = 'meridian.reservations';
 
-/** Populated whenever localStorage is unusable so the session still works. */
+/**
+ * Holds ONLY the reservations that could not be written to localStorage, so the
+ * session still works when storage is unusable. Deliberately not a mirror of
+ * everything saved: a mirror is a second source of truth that outlives the
+ * store it shadows, so a cleared or corrupt localStorage would still report
+ * reservations the guest can no longer actually retrieve.
+ */
 let memory: Reservation[] = [];
 let persistent = true;
 
@@ -1866,7 +1915,6 @@ export function loadReservations(): Reservation[] {
 }
 
 export function saveReservation(reservation: Reservation): void {
-  memory = [...memory.filter((r) => r.code !== reservation.code), reservation];
   try {
     const persisted = (() => {
       try {
@@ -1880,8 +1928,12 @@ export function saveReservation(reservation: Reservation): void {
     const next = [...persisted.filter((r) => r.code !== reservation.code), reservation];
     window.localStorage.setItem(KEY, JSON.stringify(next));
     persistent = true;
+    // Durably stored now, so drop any earlier unpersisted copy of the same code
+    // rather than letting it surface again as a duplicate on the next read.
+    memory = memory.filter((r) => r.code !== reservation.code);
   } catch {
-    // Safari private browsing throws on setItem. The reservation stays in memory.
+    // Safari private browsing throws on setItem. Keep it for this session only.
+    memory = [...memory.filter((r) => r.code !== reservation.code), reservation];
     persistent = false;
   }
 }
