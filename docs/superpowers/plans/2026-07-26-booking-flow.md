@@ -1199,7 +1199,7 @@ export function isSuiteAvailable(suiteId: string, range: DateRange): boolean {
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- availability`
-Expected: PASS — 7 tests.
+Expected: PASS — 9 tests (7 original plus the Sunday-composition and golden-vector tests added after review).
 
 - [ ] **Step 5: Commit**
 
@@ -1401,7 +1401,7 @@ export function quote(suite: Suite, range: DateRange): Quote {
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- pricing`
-Expected: PASS — 8 tests.
+Expected: PASS — 10 tests (6 original plus the integer-cents, breakdown-sums and Friday-rounding tests added after review).
 
 - [ ] **Step 5: Commit**
 
