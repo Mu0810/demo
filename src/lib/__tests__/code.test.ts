@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { generateCode, CODE_ALPHABET } from '../code';
 
 describe('generateCode', () => {
@@ -22,5 +22,28 @@ describe('generateCode', () => {
     for (let i = 0; i < 50; i++) {
       expect(generateCode(taken)).not.toBe(first);
     }
+  });
+
+  it('really consults the taken set, proven with a deterministic RNG', () => {
+    // The test above cannot fail by accident: a random 32^6 draw collides with
+    // the one taken code at p ~ 1e-9, so deleting the collision check survives
+    // it. Pinning Math.random makes the first candidate collide for certain.
+    // First 6 draws -> index 0 ('2') => MR-222222, which is taken.
+    // Next 6 draws  -> index 1 ('3') => MR-333333, which is free.
+    let call = 0;
+    const spy = vi.spyOn(Math, 'random').mockImplementation(() => (call++ < 6 ? 0 : 1 / 32));
+
+    expect(generateCode(new Set(['MR-222222']))).toBe('MR-333333');
+
+    spy.mockRestore();
+  });
+
+  it('returns the first candidate when nothing is taken', () => {
+    let call = 0;
+    const spy = vi.spyOn(Math, 'random').mockImplementation(() => (call++ < 6 ? 0 : 1 / 32));
+
+    expect(generateCode()).toBe('MR-222222');
+
+    spy.mockRestore();
   });
 });

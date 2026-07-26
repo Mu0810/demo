@@ -121,6 +121,65 @@ describe('validateBooking', () => {
     expect(errors).toContain('TOO_MANY_GUESTS');
   });
 
+  it('accepts a check-in today', () => {
+    // Same-day arrival is the most common booking. Without this, tightening the
+    // comparison to `<=` would reject it and no test would notice.
+    const errors = validateBooking({
+      suite,
+      range: { checkIn: TODAY, checkOut: '2026-07-28' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(errors).not.toContain('PAST_CHECKIN');
+  });
+
+  it('does not blame availability when no dates have been chosen', () => {
+    // isSuiteAvailable returns false for an empty range as well as a blocked
+    // one, so without the `nights >= 1` guard a guest who has picked nothing is
+    // told the suite is unavailable.
+    const errors = validateBooking({
+      suite,
+      range: { checkIn: '', checkOut: '' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(errors).not.toContain('SUITE_UNAVAILABLE');
+    expect(errors).toContain('CHECKOUT_NOT_AFTER_CHECKIN');
+  });
+
+  it('pins the twelve-month boundary on both sides', () => {
+    // Exactly 12 months out is rejected; one day under is accepted. This holds
+    // the `>=`, the threshold value, and the direction all in place.
+    const atLimit = validateBooking({
+      suite,
+      range: { checkIn: '2027-07-26', checkOut: '2027-07-28' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(atLimit).toContain('TOO_FAR_AHEAD');
+
+    const justUnder = validateBooking({
+      suite,
+      range: { checkIn: '2027-07-25', checkOut: '2027-07-27' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(justUnder).not.toContain('TOO_FAR_AHEAD');
+  });
+
+  it('never reports TOO_FAR_AHEAD for a check-in in the past', () => {
+    // monthsBetween returns a negative number here. Wrapping it in Math.abs
+    // would turn a year-old date into a "too far ahead" error.
+    const errors = validateBooking({
+      suite,
+      range: { checkIn: '2025-07-26', checkOut: '2025-07-28' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(errors).toContain('PAST_CHECKIN');
+    expect(errors).not.toContain('TOO_FAR_AHEAD');
+  });
+
   it('has a human message for every error code', () => {
     const codes = [
       'PAST_CHECKIN',

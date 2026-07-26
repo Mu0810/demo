@@ -54,6 +54,32 @@ describe('reservation storage', () => {
     expect(loadReservations()).toHaveLength(1);
   });
 
+  it('keeps earlier reservations when another is saved', () => {
+    // Without this, replacing the merge with `[reservation]` — wiping every
+    // prior booking on each save — passes the whole suite. Silent data loss.
+    saveReservation(sample);
+    saveReservation({ ...sample, code: 'MR-DEF345', guestName: 'B Guest' });
+
+    const all = loadReservations();
+    expect(all).toHaveLength(2);
+    expect(findReservation('MR-ABC234')?.guestName).toBe('A Guest');
+    expect(findReservation('MR-DEF345')?.guestName).toBe('B Guest');
+  });
+
+  it('overwrites in place when the same code is saved twice', () => {
+    saveReservation(sample);
+    saveReservation({ ...sample, guestName: 'Renamed' });
+
+    expect(loadReservations()).toHaveLength(1);
+    expect(findReservation('MR-ABC234')?.guestName).toBe('Renamed');
+  });
+
+  it('reports storage as persistent after a successful write', () => {
+    // Pins the true case; otherwise a hardcoded `return false` passes.
+    saveReservation(sample);
+    expect(isPersistent()).toBe(true);
+  });
+
   it('survives localStorage throwing on write, as in Safari private mode', () => {
     vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
       throw new DOMException('QuotaExceededError');
