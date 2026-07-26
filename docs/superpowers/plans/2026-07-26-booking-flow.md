@@ -1225,7 +1225,7 @@ git commit -m "feat: add deterministic availability rules"
 ```ts
 // src/lib/__tests__/pricing.test.ts
 import { describe, it, expect } from 'vitest';
-import { quote, formatUSD } from '../pricing';
+import { quote, formatUSD, WEEKEND_MULTIPLIER, TAX_RATE } from '../pricing';
 import { addDays } from '../dates';
 import type { Suite } from '../../types';
 
@@ -1324,6 +1324,20 @@ describe('formatUSD', () => {
     expect(formatUSD(3696)).toBe('$3,696');
   });
 });
+
+describe('advertised rates match charged rates', () => {
+  it('derives the display constants from the integer arithmetic', () => {
+    // If these were hand-written they could drift from WEEKEND_CENTS/TAX_PERCENT,
+    // and the UI would advertise a rate the guest is not actually charged.
+    expect(WEEKEND_MULTIPLIER).toBe(1.15);
+    expect(TAX_RATE).toBe(0.12);
+
+    // Prove they describe the real arithmetic rather than sitting beside it.
+    const oneFriday = quote(suite, { checkIn: '2026-08-14', checkOut: '2026-08-15' });
+    expect(oneFriday.subtotal).toBe(Math.round(suite.rate * WEEKEND_MULTIPLIER));
+    expect(oneFriday.tax).toBe(Math.round(oneFriday.subtotal * TAX_RATE));
+  });
+});
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -1337,12 +1351,8 @@ Expected: FAIL — cannot resolve `../pricing`.
 import type { DateRange, Suite } from '../types';
 import { isWeekendNight, nightsIn } from './dates';
 
-/** Exported for UI copy ("15% weekend rate", "12% tax") — not used for arithmetic. */
-export const WEEKEND_MULTIPLIER = 1.15;
-export const TAX_RATE = 0.12;
-
 /**
- * Integer equivalents, used for the actual money maths.
+ * Integer cents, used for the actual money maths.
  *
  * `rate * 1.15` is not exact in binary: `850 * 1.15 === 977.4999999999999`,
  * which `Math.round` takes DOWN to 977 and silently undercharges by a dollar.
@@ -1352,6 +1362,14 @@ export const TAX_RATE = 0.12;
 const WEEKEND_CENTS = 115;
 const MIDWEEK_CENTS = 100;
 const TAX_PERCENT = 12;
+
+/**
+ * Derived from the integer constants above, never hand-written, so UI copy can
+ * never advertise a different rate from the one actually charged. Both
+ * divisions are exact in IEEE-754 (115/100 === 1.15, 12/100 === 0.12).
+ */
+export const WEEKEND_MULTIPLIER = WEEKEND_CENTS / MIDWEEK_CENTS;
+export const TAX_RATE = TAX_PERCENT / 100;
 
 export type Quote = {
   nights: number;
