@@ -11,7 +11,9 @@
 ## Global Constraints
 
 - Project root: `/Users/hello/skills/meridian-reserve` — never write outside it
-- Exact pinned versions, no ranges: `react@19.2.8`, `react-dom@19.2.8`, `motion@12.42.2`, `lenis@1.3.25`, `vite@8.1.5`, `@vitejs/plugin-react@6.0.4`, `typescript@7.0.2`, `vitest@4.1.10`, `jsdom@29.1.1`, `@testing-library/react@16.3.2`, `@testing-library/jest-dom@7.0.0`
+- Exact pinned versions, no ranges: `react@19.2.8`, `react-dom@19.2.8`, `motion@12.42.2`, `lenis@1.3.25`, `vite@8.1.5`, `@vitejs/plugin-react@6.0.4`, `typescript@7.0.2`, `vitest@4.1.10`, `jsdom@29.1.1`, `@testing-library/react@16.3.2`, `@testing-library/jest-dom@7.0.0`, `@types/react@19.2.8`, `@types/react-dom@19.2.3`
+- **Corrected during Task 1:** `@types/react-dom` is pinned to `19.2.3`, not `19.2.8`. That version was never published — the `19.2.x` line ends at `19.2.3`. The two `@types` packages version independently and do not track each other. Do not "align" them.
+- **Node 20 is supported.** `@testing-library/jest-dom@7.0.0` declares `node>=22` and npm emits an EBADENGINE warning on Node 20.20.2. This was tested empirically against every matcher the plan uses (`toBeInTheDocument`, `toHaveAttribute`, `toHaveTextContent`, `toHaveFocus`, `toBeDisabled`, `not.toBeInTheDocument`) and all pass. Ignore the warning; do not downgrade jest-dom.
 - Palette, exact values: bg `#0A0A0B`, panel `#16161A`, gold `#C9A227`, primary text `#F2EFE9`, body `#CFCBC4`, caption `#9C978F`
 - Display type stack: `'Didot', 'Bodoni 72', 'Bodoni MT', Garamond, 'Times New Roman', serif`
 - UI type stack: `'Helvetica Neue', Inter, -apple-system, sans-serif`
@@ -133,7 +135,10 @@
 - [ ] **Step 3: Create `vite.config.ts`**
 
 ```ts
-import { defineConfig } from 'vite';
+// Import from 'vitest/config', not 'vite'. Vite's own `defineConfig` types
+// reject the `test` key (TS2769), and the error is invisible while tsconfig
+// uses include: ["src"] — it surfaces the moment the root is type-checked.
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
