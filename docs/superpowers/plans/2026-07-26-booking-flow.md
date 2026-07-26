@@ -252,7 +252,8 @@ git commit -m "chore: scaffold Vite + React + TS project with Vitest"
 
 **Interfaces:**
 - Consumes: Task 1 scaffold
-- Produces: `useReducedMotion(): boolean`; `DURATION` (`{ fast: 0.4, base: 0.7, slow: 0.9, hero: 1.4 }` seconds), `EASE_OUT`, `EASE_MORPH` tuples, `morphTransition(reduced: boolean)`, `staggerParent(reduced: boolean, each?: number)`, `riseIn`
+- Produces: `useReducedMotion(): boolean`; `DURATION` (`{ fast: 0.4, base: 0.7, slow: 0.9, hero: 1.4 }` seconds), `EASE_OUT`, `EASE_MORPH` readonly tuples, `morphTransition(reduced: boolean)`, `fade(reduced: boolean, duration?: number)`, `staggerParent(reduced: boolean, each?: number)` → variant map `{ hidden, visible }`, `riseIn(reduced: boolean)` → variant map `{ hidden, visible }`
+- **`staggerParent` and `riseIn` are functions returning variant MAPS keyed `hidden`/`visible`.** Consumers pass them to the `variants` prop and drive them with the string labels `initial="hidden"` and `animate="visible"` (or `whileInView="visible"`). They are not spread as `{ initial, animate }` objects.
 
 - [ ] **Step 1: Create `src/styles/tokens.css`**
 
@@ -349,9 +350,9 @@ button {
 ```tsx
 // src/motion/__tests__/useReducedMotion.test.tsx
 import { describe, it, expect } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { renderHook, act } from '@testing-library/react';
 import { useReducedMotion } from '../useReducedMotion';
-import { morphTransition, staggerParent } from '../tokens';
+import { fade, morphTransition, riseIn, staggerParent } from '../tokens';
 
 function mockMatchMedia(matches: boolean) {
   window.matchMedia = ((query: string) => ({
@@ -380,15 +381,112 @@ describe('useReducedMotion', () => {
   });
 });
 
+describe('useReducedMotion subscription', () => {
+  it('reacts to a change event after mount', () => {
+    let handler: ((e: MediaQueryListEvent) => void) | null = null;
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: (_: string, cb: (e: MediaQueryListEvent) => void) => {
+        handler = cb;
+      },
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+
+    const { result } = renderHook(() => useReducedMotion());
+    expect(result.current).toBe(false);
+    expect(handler).not.toBeNull();
+
+    act(() => {
+      handler!({ matches: true } as MediaQueryListEvent);
+    });
+    expect(result.current).toBe(true);
+  });
+
+  it('unsubscribes on unmount', () => {
+    let removed = false;
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {
+        removed = true;
+      },
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+
+    const { unmount } = renderHook(() => useReducedMotion());
+    unmount();
+    expect(removed).toBe(true);
+  });
+
+  it('queries the prefers-reduced-motion feature specifically', () => {
+    const seen: string[] = [];
+    window.matchMedia = ((query: string) => {
+      seen.push(query);
+      return {
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      };
+    }) as unknown as typeof window.matchMedia;
+
+    renderHook(() => useReducedMotion());
+    expect(seen.every((q) => q === '(prefers-reduced-motion: reduce)')).toBe(true);
+    expect(seen.length).toBeGreaterThan(0);
+  });
+});
+
 describe('motion tokens', () => {
   it('collapses the morph to zero duration when reduced', () => {
     expect(morphTransition(true).duration).toBe(0);
     expect(morphTransition(false).duration).toBeGreaterThan(0);
   });
 
-  it('removes stagger when reduced', () => {
-    expect(staggerParent(true).animate.transition.staggerChildren).toBe(0);
-    expect(staggerParent(false).animate.transition.staggerChildren).toBeGreaterThan(0);
+  it('drops the easing entirely when reduced', () => {
+    expect('ease' in morphTransition(true)).toBe(false);
+    expect('ease' in morphTransition(false)).toBe(true);
+  });
+
+  it('zeroes fade duration when reduced and honours a custom duration', () => {
+    expect(fade(true).duration).toBe(0);
+    expect(fade(false).duration).toBeGreaterThan(0);
+    expect(fade(false, 1.2).duration).toBe(1.2);
+  });
+
+  it('exposes hidden and visible labels on both parent and child', () => {
+    // Label names are the contract between parent and child; a mismatch
+    // silently disables the animation.
+    expect(Object.keys(staggerParent(false))).toEqual(['hidden', 'visible']);
+    expect(Object.keys(riseIn(false))).toEqual(['hidden', 'visible']);
+  });
+
+  it('removes both stagger and child delay when reduced', () => {
+    expect(staggerParent(true).visible.transition.staggerChildren).toBe(0);
+    expect(staggerParent(true).visible.transition.delayChildren).toBe(0);
+    expect(staggerParent(false).visible.transition.staggerChildren).toBeGreaterThan(0);
+    expect(staggerParent(false).visible.transition.delayChildren).toBeGreaterThan(0);
+  });
+
+  it('honours a custom stagger interval', () => {
+    expect(staggerParent(false, 0.2).visible.transition.staggerChildren).toBe(0.2);
+  });
+
+  it('makes the child rise static when reduced', () => {
+    expect(riseIn(true).hidden.y).toBe(0);
+    expect(riseIn(false).hidden.y).toBeGreaterThan(0);
   });
 });
 ```
@@ -442,22 +540,30 @@ export const DURATION = {
 export const EASE_OUT = [0.16, 1, 0.3, 1] as const;
 export const EASE_MORPH = [0.22, 1, 0.36, 1] as const;
 
+// No cast on the easings. The `as const` tuples ARE Motion's BezierDefinition
+// (readonly [number, number, number, number]); casting them to number[] makes
+// the return value unassignable to `transition` (TS2322) at every call site.
 export function morphTransition(reduced: boolean) {
-  return reduced
-    ? { duration: 0 }
-    : { duration: 0.8, ease: EASE_MORPH as unknown as number[] };
+  return reduced ? { duration: 0 } : { duration: 0.8, ease: EASE_MORPH };
 }
 
 export function fade(reduced: boolean, duration = DURATION.base) {
-  return reduced
-    ? { duration: 0 }
-    : { duration, ease: EASE_OUT as unknown as number[] };
+  return reduced ? { duration: 0 } : { duration, ease: EASE_OUT };
 }
 
+/**
+ * Variant MAP for a staggering parent — used as
+ * `variants={staggerParent(reduced)} initial="hidden" animate="visible"`.
+ *
+ * Motion only runs stagger orchestration when the animate definition is a
+ * variant LABEL and the element is a variant node (i.e. it has a `variants`
+ * prop). Passing `{ initial: {...}, animate: {...} }` as inline objects
+ * type-checks but silently never staggers.
+ */
 export function staggerParent(reduced: boolean, each = 0.09) {
   return {
-    initial: { opacity: 0 },
-    animate: {
+    hidden: { opacity: 0 },
+    visible: {
       opacity: 1,
       transition: {
         staggerChildren: reduced ? 0 : each,
@@ -467,12 +573,21 @@ export function staggerParent(reduced: boolean, each = 0.09) {
   };
 }
 
-/** Child variant used with staggerParent. */
-export const riseIn = {
-  initial: { opacity: 0, y: 24 },
-  animate: { opacity: 1, y: 0 },
-};
+/**
+ * Child variant map. Pair with staggerParent, matching label names.
+ * Takes `reduced` so the reduced path is genuinely static: without this the
+ * child still animates y even when the parent's stagger is zeroed.
+ */
+export function riseIn(reduced: boolean) {
+  return {
+    hidden: { opacity: 0, y: reduced ? 0 : 24 },
+    visible: { opacity: 1, y: 0 },
+  };
+}
 ```
+
+**Label names are part of the contract.** Parent and child must both use
+`hidden`/`visible`. A mismatch produces no error and no animation.
 
 - [ ] **Step 7: Import styles in `src/main.tsx`**
 
@@ -2780,8 +2895,11 @@ import { motion } from 'motion/react';
 import type { Suite } from '../types';
 import { formatUSD } from '../lib/pricing';
 import { SmartImage } from './SmartImage';
-import { riseIn } from '../motion/tokens';
 import './SuiteCard.css';
+
+// Note: SuiteCard carries NO `variants` of its own. Its parent <motion.li> in
+// Landing is the stagger child and owns the riseIn variant. Putting riseIn here
+// too would animate the same properties twice on nested elements.
 
 type Props = {
   suite: Suite;
@@ -2793,7 +2911,6 @@ export function SuiteCard({ suite, unavailable, onSelect }: Props) {
   return (
     <motion.button
       type="button"
-      variants={riseIn}
       layout
       disabled={unavailable}
       onClick={() => !unavailable && onSelect(suite.id)}
@@ -3128,13 +3245,18 @@ export function Landing() {
         <motion.ul
           className="suite-grid"
           variants={staggerParent(reduced)}
-          initial="initial"
-          whileInView="animate"
+          initial="hidden"
+          whileInView="visible"
           viewport={{ once: true, amount: 0.15 }}
         >
           <AnimatePresence mode="popLayout">
             {visible.map((suite) => (
-              <motion.li key={suite.id} variants={riseIn} layout exit={{ opacity: 0, scale: 0.97 }}>
+              <motion.li
+                key={suite.id}
+                variants={riseIn(reduced)}
+                layout
+                exit={{ opacity: 0, scale: 0.97 }}
+              >
                 <SuiteCard
                   suite={suite}
                   unavailable={range ? !isSuiteAvailable(suite.id, range) : false}
@@ -3393,23 +3515,23 @@ export function SuiteDetail({ suiteId }: { suiteId: string }) {
       <motion.div
         className="detail-body"
         variants={staggerParent(reduced, 0.07)}
-        initial="initial"
-        animate="animate"
+        initial="hidden"
+        animate="visible"
         transition={{ delay: reduced ? 0 : 0.25 }}
       >
         <div>
-          <motion.div variants={riseIn}>
+          <motion.div variants={riseIn(reduced)}>
             <p className="label">{formatUSD(suite.rate)} per night</p>
             <h1 className="detail-title">{suite.name}</h1>
             <p className="detail-desc">{suite.description}</p>
           </motion.div>
 
-          <motion.button variants={riseIn} type="button" className="cta" onClick={goReserve}>
+          <motion.button variants={riseIn(reduced)} type="button" className="cta" onClick={goReserve}>
             Reserve this suite
           </motion.button>
         </div>
 
-        <motion.ul className="spec-list" variants={riseIn}>
+        <motion.ul className="spec-list" variants={riseIn(reduced)}>
           <li>
             <span>Size</span>
             <span>{suite.size} m&sup2;</span>
@@ -4128,7 +4250,7 @@ Expected: FAIL — App still renders the placeholder heading.
 
 ```tsx
 import { useEffect, useRef } from 'react';
-import { AnimatePresence, LayoutGroup } from 'motion/react';
+import { AnimatePresence, LayoutGroup, MotionConfig } from 'motion/react';
 import { BookingProvider, useBooking } from './state/BookingProvider';
 import { onPopState, replaceView, parsePath } from './state/history';
 import { Landing } from './views/Landing';
@@ -4188,9 +4310,14 @@ function Router() {
 
 export default function App() {
   return (
-    <BookingProvider>
-      <Router />
-    </BookingProvider>
+    // reducedMotion="user" is a second line of defence: it suppresses
+    // transform animations app-wide when the OS preference is set, catching any
+    // component that forgot to branch on useReducedMotion itself.
+    <MotionConfig reducedMotion="user">
+      <BookingProvider>
+        <Router />
+      </BookingProvider>
+    </MotionConfig>
   );
 }
 ```
