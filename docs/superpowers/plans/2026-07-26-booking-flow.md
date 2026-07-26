@@ -1050,7 +1050,7 @@ export function monthsBetween(a: string, b: string): number {
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- dates`
-Expected: PASS — 8 tests.
+Expected: PASS — 12 tests (8 original plus the 4 validation/local-today tests added after review).
 
 - [ ] **Step 5: Commit**
 
