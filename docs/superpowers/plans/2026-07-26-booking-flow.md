@@ -645,9 +645,15 @@ describe('SUITES', () => {
   });
 
   it('gives every suite a hero and exactly 3 gallery images', () => {
+    // The host check must cover the gallery too, not just the hero — otherwise
+    // 18 of the 24 URLs are unguarded against the https/unsplash constraint.
+    const UNSPLASH = /^https:\/\/images\.unsplash\.com\/photo-/;
     for (const s of SUITES) {
-      expect(s.hero).toMatch(/^https:\/\/images\.unsplash\.com\//);
+      expect(s.hero).toMatch(UNSPLASH);
       expect(s.gallery).toHaveLength(3);
+      for (const g of s.gallery) {
+        expect(g).toMatch(UNSPLASH);
+      }
     }
   });
 
@@ -844,7 +850,9 @@ git commit -m "feat: add suite data model and six suites"
 
 **Interfaces:**
 - Consumes: `DateRange` from `src/types`
-- Produces: `toISO(d: Date): string`, `fromISO(s: string): Date`, `addDays(iso: string, n: number): string`, `nightsIn(range: DateRange): string[]`, `nightCount(range: DateRange): number`, `isWeekendNight(iso: string): boolean`, `todayISO(): string`, `monthsBetween(a: string, b: string): number`
+- Produces: `toISO(d: Date): string`, `fromISO(s: string): Date`, `addDays(iso: string, n: number): string`, `isValidISO(iso: string): boolean`, `nightsIn(range: DateRange): string[]`, `nightCount(range: DateRange): number`, `isWeekendNight(iso: string): boolean`, `todayISO(): string`, `monthsBetween(a: string, b: string): number`
+- `todayISO()` reads **local** calendar fields (a wall-clock question); everything else is UTC-anchored.
+- `nightsIn` compares timestamps, not strings, and returns `[]` for invalid input.
 
 All dates are handled as UTC-noon `Date` objects internally so daylight-saving shifts can never move a date across a boundary.
 
@@ -858,9 +866,11 @@ import {
   nightsIn,
   nightCount,
   isWeekendNight,
+  isValidISO,
   monthsBetween,
   fromISO,
   toISO,
+  todayISO,
 } from '../dates';
 
 describe('date helpers', () => {
@@ -904,6 +914,38 @@ describe('date helpers', () => {
     expect(monthsBetween('2026-07-26', '2027-07-26')).toBe(12);
     expect(monthsBetween('2026-07-26', '2026-08-25')).toBe(0);
   });
+
+  it('validates strict zero-padded ISO dates', () => {
+    expect(isValidISO('2026-08-14')).toBe(true);
+    expect(isValidISO('2026-8-4')).toBe(false);   // unpadded
+    expect(isValidISO('2026-02-30')).toBe(false); // not a real day
+    expect(isValidISO('2026-13-01')).toBe(false); // month rollover
+    expect(isValidISO('')).toBe(false);
+    expect(isValidISO('unset')).toBe(false);
+    expect(isValidISO('2026-08-14T00:00:00Z')).toBe(false);
+  });
+
+  it('returns no nights for invalid input instead of looping forever', () => {
+    // A string comparison would never terminate here: 'unset' sorts above every
+    // digit-leading date addDays can produce, so the loop would allocate to OOM.
+    expect(nightsIn({ checkIn: '2026-08-14', checkOut: 'unset' })).toEqual([]);
+    expect(nightsIn({ checkIn: 'junk', checkOut: '2026-08-20' })).toEqual([]);
+    expect(nightCount({ checkIn: '2026-08-14', checkOut: 'TBD' })).toBe(0);
+  });
+
+  it('counts nights correctly for unpadded-looking boundaries', () => {
+    // Unpadded input is rejected rather than silently yielding zero nights on a
+    // real stay, which a raw string comparison would have done.
+    expect(nightsIn({ checkIn: '2026-8-4', checkOut: '2026-08-14' })).toEqual([]);
+  });
+
+  it('reports today in the local calendar, not UTC', () => {
+    const now = new Date();
+    const expected = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+      now.getDate()
+    ).padStart(2, '0')}`;
+    expect(todayISO()).toBe(expected);
+  });
 });
 ```
 
@@ -939,15 +981,44 @@ export function addDays(iso: string, n: number): string {
   return toISO(d);
 }
 
+/**
+ * Today in the USER'S LOCAL calendar, not UTC.
+ *
+ * `toISO(new Date())` would read UTC fields, so for anyone west of UTC during
+ * their afternoon/evening it returns tomorrow's date — which would disable the
+ * guest's actual today in the calendar. Local fields are correct here precisely
+ * because "today" is a wall-clock question, unlike the stored range values.
+ */
 export function todayISO(): string {
-  return toISO(new Date());
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-/** The nights actually slept: check-in inclusive, check-out exclusive. */
+/** Strict zero-padded ISO calendar date, and a real day (rejects 2026-02-30). */
+export function isValidISO(iso: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  return toISO(fromISO(iso)) === iso;
+}
+
+/**
+ * The nights actually slept: check-in inclusive, check-out exclusive.
+ *
+ * Compares timestamps rather than strings. A string comparison here can never
+ * terminate when `checkOut` is a non-date whose first character sorts above
+ * '9' (`'unset'`, `'TBD'`, `'Invalid Date'`), because `addDays` always returns
+ * a digit-leading string — the loop then allocates until the heap dies. Invalid
+ * input returns an empty list instead.
+ */
 export function nightsIn(range: DateRange): string[] {
+  if (!isValidISO(range.checkIn) || !isValidISO(range.checkOut)) return [];
+
+  const end = fromISO(range.checkOut).getTime();
   const out: string[] = [];
   let cursor = range.checkIn;
-  while (cursor < range.checkOut) {
+  while (fromISO(cursor).getTime() < end) {
     out.push(cursor);
     cursor = addDays(cursor, 1);
   }
