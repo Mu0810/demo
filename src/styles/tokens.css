@@ -1,0 +1,20 @@
+:root {
+  --bg: #0a0a0b;
+  --panel: #16161a;
+  --gold: #c9a227;
+  --text: #f2efe9;
+  --body: #cfcbc4;
+  --caption: #9c978f;
+
+  --font-display: 'Didot', 'Bodoni 72', 'Bodoni MT', Garamond, 'Times New Roman', serif;
+  --font-ui: 'Helvetica Neue', Inter, -apple-system, sans-serif;
+
+  --space-1: 0.5rem;
+  --space-2: 1rem;
+  --space-3: 1.5rem;
+  --space-4: 2.5rem;
+  --space-5: 4rem;
+  --space-6: 6rem;
+
+  --max-w: 1240px;
+}

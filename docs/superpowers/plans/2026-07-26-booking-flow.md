@@ -11,7 +11,11 @@
 ## Global Constraints
 
 - Project root: `/Users/hello/skills/meridian-reserve` — never write outside it
-- Exact pinned versions, no ranges: `react@19.2.8`, `react-dom@19.2.8`, `motion@12.42.2`, `lenis@1.3.25`, `vite@8.1.5`, `@vitejs/plugin-react@6.0.4`, `typescript@7.0.2`, `vitest@4.1.10`, `jsdom@29.1.1`, `@testing-library/react@16.3.2`, `@testing-library/jest-dom@7.0.0`
+- Exact pinned versions, no ranges: `react@19.2.8`, `react-dom@19.2.8`, `motion@12.42.2`, `lenis@1.3.25`, `vite@8.1.5`, `@vitejs/plugin-react@6.0.4`, `typescript@7.0.2`, `vitest@4.1.10`, `jsdom@29.1.1`, `@testing-library/react@16.3.2`, `@testing-library/jest-dom@7.0.0`, `@types/react@19.2.8`, `@types/react-dom@19.2.3`
+- **Corrected during Task 1:** `@types/react-dom` is pinned to `19.2.3`, not `19.2.8`. That version was never published — the `19.2.x` line ends at `19.2.3`. The two `@types` packages version independently and do not track each other. Do not "align" them.
+- **`src/vite-env.d.ts` exists and must not be deleted.** Added during Task 2. It contains only `/// <reference types="vite/client" />`, which is what makes CSS side-effect imports type-check. Without it every `import './x.css'` fails with TS2882 — at build time only, never in `npm run dev`. The Task 1 scaffold omitted it; `tsconfig.json`'s `"types": ["vitest/globals"]` blocks automatic `vite/client` pickup.
+- **`noUnusedLocals` and `noUnusedParameters` are on.** An unused import is a build failure (TS6133) that `npm test` will NOT catch, because Vitest transpiles without type-checking. Always run `npm run build` before declaring a task done, and import only what you use.
+- **Node 20 is supported.** `@testing-library/jest-dom@7.0.0` declares `node>=22` and npm emits an EBADENGINE warning on Node 20.20.2. This was tested empirically against every matcher the plan uses (`toBeInTheDocument`, `toHaveAttribute`, `toHaveTextContent`, `toHaveFocus`, `toBeDisabled`, `not.toBeInTheDocument`) and all pass. Ignore the warning; do not downgrade jest-dom.
 - Palette, exact values: bg `#0A0A0B`, panel `#16161A`, gold `#C9A227`, primary text `#F2EFE9`, body `#CFCBC4`, caption `#9C978F`
 - Display type stack: `'Didot', 'Bodoni 72', 'Bodoni MT', Garamond, 'Times New Roman', serif`
 - UI type stack: `'Helvetica Neue', Inter, -apple-system, sans-serif`
@@ -133,7 +137,10 @@
 - [ ] **Step 3: Create `vite.config.ts`**
 
 ```ts
-import { defineConfig } from 'vite';
+// Import from 'vitest/config', not 'vite'. Vite's own `defineConfig` types
+// reject the `test` key (TS2769), and the error is invisible while tsconfig
+// uses include: ["src"] — it surfaces the moment the root is type-checked.
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
@@ -142,6 +149,11 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./src/vitest.setup.ts'],
+    // A `spy.mockRestore()` at the end of a test body is skipped when an
+    // assertion throws, leaving the stub installed for later tests in the file.
+    // This makes restoration structural rather than positional — it matters most
+    // for the component suites, which stub far more than Math.random.
+    restoreMocks: true,
   },
 });
 ```
@@ -150,6 +162,48 @@ export default defineConfig({
 
 ```ts
 import '@testing-library/jest-dom/vitest';
+
+/**
+ * jsdom's `localStorage` is a proxy-backed platform object with a named-property
+ * setter, so `Object.defineProperty(localStorage, 'setItem', ...)` is routed to
+ * that setter: it stores an ITEM under the key "setItem" and leaves the real
+ * method untouched. `vi.spyOn(window.localStorage, 'setItem')` therefore reports
+ * success while doing nothing, and a test cannot simulate the write failure
+ * Safari private browsing produces — the exact case the storage fallback exists
+ * for. Swapping in a plain object of the same shape lets spies attach normally.
+ *
+ * Verified against the installed jsdom: after defineProperty "succeeds", the own
+ * descriptor is still undefined, `setItem` does not throw, and the mock function
+ * is retrievable via `getItem('setItem')`.
+ */
+const localStorageBacking = new Map<string, string>();
+const localStorageShim = {
+  get length(): number {
+    return localStorageBacking.size;
+  },
+  key(index: number): string | null {
+    return Array.from(localStorageBacking.keys())[index] ?? null;
+  },
+  getItem(key: string): string | null {
+    const k = String(key);
+    return localStorageBacking.has(k) ? (localStorageBacking.get(k) as string) : null;
+  },
+  setItem(key: string, value: string): void {
+    localStorageBacking.set(String(key), String(value));
+  },
+  removeItem(key: string): void {
+    localStorageBacking.delete(String(key));
+  },
+  clear(): void {
+    localStorageBacking.clear();
+  },
+};
+
+Object.defineProperty(window, 'localStorage', {
+  value: localStorageShim as unknown as Storage,
+  configurable: true,
+  writable: true,
+});
 
 // jsdom does not implement matchMedia; Motion and useReducedMotion both need it.
 if (!window.matchMedia) {
@@ -245,7 +299,8 @@ git commit -m "chore: scaffold Vite + React + TS project with Vitest"
 
 **Interfaces:**
 - Consumes: Task 1 scaffold
-- Produces: `useReducedMotion(): boolean`; `DURATION` (`{ fast: 0.4, base: 0.7, slow: 0.9, hero: 1.4 }` seconds), `EASE_OUT`, `EASE_MORPH` tuples, `morphTransition(reduced: boolean)`, `staggerParent(reduced: boolean, each?: number)`, `riseIn`
+- Produces: `useReducedMotion(): boolean`; `DURATION` (`{ fast: 0.4, base: 0.7, slow: 0.9, hero: 1.4 }` seconds), `EASE_OUT`, `EASE_MORPH` readonly tuples, `morphTransition(reduced: boolean)`, `fade(reduced: boolean, duration?: number)`, `staggerParent(reduced: boolean, each?: number)` → variant map `{ hidden, visible }`, `riseIn(reduced: boolean)` → variant map `{ hidden, visible }`
+- **`staggerParent` and `riseIn` are functions returning variant MAPS keyed `hidden`/`visible`.** Consumers pass them to the `variants` prop and drive them with the string labels `initial="hidden"` and `animate="visible"` (or `whileInView="visible"`). They are not spread as `{ initial, animate }` objects.
 
 - [ ] **Step 1: Create `src/styles/tokens.css`**
 
@@ -341,10 +396,10 @@ button {
 
 ```tsx
 // src/motion/__tests__/useReducedMotion.test.tsx
-import { describe, it, expect, vi } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { renderHook, act } from '@testing-library/react';
 import { useReducedMotion } from '../useReducedMotion';
-import { morphTransition, staggerParent } from '../tokens';
+import { fade, morphTransition, riseIn, staggerParent } from '../tokens';
 
 function mockMatchMedia(matches: boolean) {
   window.matchMedia = ((query: string) => ({
@@ -373,15 +428,112 @@ describe('useReducedMotion', () => {
   });
 });
 
+describe('useReducedMotion subscription', () => {
+  it('reacts to a change event after mount', () => {
+    let handler: ((e: MediaQueryListEvent) => void) | null = null;
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: (_: string, cb: (e: MediaQueryListEvent) => void) => {
+        handler = cb;
+      },
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+
+    const { result } = renderHook(() => useReducedMotion());
+    expect(result.current).toBe(false);
+    expect(handler).not.toBeNull();
+
+    act(() => {
+      handler!({ matches: true } as MediaQueryListEvent);
+    });
+    expect(result.current).toBe(true);
+  });
+
+  it('unsubscribes on unmount', () => {
+    let removed = false;
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {
+        removed = true;
+      },
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+
+    const { unmount } = renderHook(() => useReducedMotion());
+    unmount();
+    expect(removed).toBe(true);
+  });
+
+  it('queries the prefers-reduced-motion feature specifically', () => {
+    const seen: string[] = [];
+    window.matchMedia = ((query: string) => {
+      seen.push(query);
+      return {
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      };
+    }) as unknown as typeof window.matchMedia;
+
+    renderHook(() => useReducedMotion());
+    expect(seen.every((q) => q === '(prefers-reduced-motion: reduce)')).toBe(true);
+    expect(seen.length).toBeGreaterThan(0);
+  });
+});
+
 describe('motion tokens', () => {
   it('collapses the morph to zero duration when reduced', () => {
     expect(morphTransition(true).duration).toBe(0);
     expect(morphTransition(false).duration).toBeGreaterThan(0);
   });
 
-  it('removes stagger when reduced', () => {
-    expect(staggerParent(true).animate.transition.staggerChildren).toBe(0);
-    expect(staggerParent(false).animate.transition.staggerChildren).toBeGreaterThan(0);
+  it('drops the easing entirely when reduced', () => {
+    expect('ease' in morphTransition(true)).toBe(false);
+    expect('ease' in morphTransition(false)).toBe(true);
+  });
+
+  it('zeroes fade duration when reduced and honours a custom duration', () => {
+    expect(fade(true).duration).toBe(0);
+    expect(fade(false).duration).toBeGreaterThan(0);
+    expect(fade(false, 1.2).duration).toBe(1.2);
+  });
+
+  it('exposes hidden and visible labels on both parent and child', () => {
+    // Label names are the contract between parent and child; a mismatch
+    // silently disables the animation.
+    expect(Object.keys(staggerParent(false))).toEqual(['hidden', 'visible']);
+    expect(Object.keys(riseIn(false))).toEqual(['hidden', 'visible']);
+  });
+
+  it('removes both stagger and child delay when reduced', () => {
+    expect(staggerParent(true).visible.transition.staggerChildren).toBe(0);
+    expect(staggerParent(true).visible.transition.delayChildren).toBe(0);
+    expect(staggerParent(false).visible.transition.staggerChildren).toBeGreaterThan(0);
+    expect(staggerParent(false).visible.transition.delayChildren).toBeGreaterThan(0);
+  });
+
+  it('honours a custom stagger interval', () => {
+    expect(staggerParent(false, 0.2).visible.transition.staggerChildren).toBe(0.2);
+  });
+
+  it('makes the child rise static when reduced', () => {
+    expect(riseIn(true).hidden.y).toBe(0);
+    expect(riseIn(false).hidden.y).toBeGreaterThan(0);
   });
 });
 ```
@@ -435,22 +587,33 @@ export const DURATION = {
 export const EASE_OUT = [0.16, 1, 0.3, 1] as const;
 export const EASE_MORPH = [0.22, 1, 0.36, 1] as const;
 
+// No cast on the easings. The `as const` tuples ARE Motion's BezierDefinition
+// (readonly [number, number, number, number]); casting them to number[] makes
+// the return value unassignable to `transition` (TS2322) at every call site.
 export function morphTransition(reduced: boolean) {
-  return reduced
-    ? { duration: 0 }
-    : { duration: 0.8, ease: EASE_MORPH as unknown as number[] };
+  return reduced ? { duration: 0 } : { duration: 0.8, ease: EASE_MORPH };
 }
 
-export function fade(reduced: boolean, duration = DURATION.base) {
-  return reduced
-    ? { duration: 0 }
-    : { duration, ease: EASE_OUT as unknown as number[] };
+// `duration: number` must be annotated explicitly. DURATION is `as const`, so
+// an inferred default would type the parameter as the literal `0.7` and reject
+// every other value — including DURATION.fast and DURATION.hero.
+export function fade(reduced: boolean, duration: number = DURATION.base) {
+  return reduced ? { duration: 0 } : { duration, ease: EASE_OUT };
 }
 
+/**
+ * Variant MAP for a staggering parent — used as
+ * `variants={staggerParent(reduced)} initial="hidden" animate="visible"`.
+ *
+ * Motion only runs stagger orchestration when the animate definition is a
+ * variant LABEL and the element is a variant node (i.e. it has a `variants`
+ * prop). Passing `{ initial: {...}, animate: {...} }` as inline objects
+ * type-checks but silently never staggers.
+ */
 export function staggerParent(reduced: boolean, each = 0.09) {
   return {
-    initial: { opacity: 0 },
-    animate: {
+    hidden: { opacity: 0 },
+    visible: {
       opacity: 1,
       transition: {
         staggerChildren: reduced ? 0 : each,
@@ -460,12 +623,21 @@ export function staggerParent(reduced: boolean, each = 0.09) {
   };
 }
 
-/** Child variant used with staggerParent. */
-export const riseIn = {
-  initial: { opacity: 0, y: 24 },
-  animate: { opacity: 1, y: 0 },
-};
+/**
+ * Child variant map. Pair with staggerParent, matching label names.
+ * Takes `reduced` so the reduced path is genuinely static: without this the
+ * child still animates y even when the parent's stagger is zeroed.
+ */
+export function riseIn(reduced: boolean) {
+  return {
+    hidden: { opacity: 0, y: reduced ? 0 : 24 },
+    visible: { opacity: 1, y: 0 },
+  };
+}
 ```
+
+**Label names are part of the contract.** Parent and child must both use
+`hidden`/`visible`. A mismatch produces no error and no animation.
 
 - [ ] **Step 7: Import styles in `src/main.tsx`**
 
@@ -520,9 +692,15 @@ describe('SUITES', () => {
   });
 
   it('gives every suite a hero and exactly 3 gallery images', () => {
+    // The host check must cover the gallery too, not just the hero — otherwise
+    // 18 of the 24 URLs are unguarded against the https/unsplash constraint.
+    const UNSPLASH = /^https:\/\/images\.unsplash\.com\/photo-/;
     for (const s of SUITES) {
-      expect(s.hero).toMatch(/^https:\/\/images\.unsplash\.com\//);
+      expect(s.hero).toMatch(UNSPLASH);
       expect(s.gallery).toHaveLength(3);
+      for (const g of s.gallery) {
+        expect(g).toMatch(UNSPLASH);
+      }
     }
   });
 
@@ -719,7 +897,9 @@ git commit -m "feat: add suite data model and six suites"
 
 **Interfaces:**
 - Consumes: `DateRange` from `src/types`
-- Produces: `toISO(d: Date): string`, `fromISO(s: string): Date`, `addDays(iso: string, n: number): string`, `nightsIn(range: DateRange): string[]`, `nightCount(range: DateRange): number`, `isWeekendNight(iso: string): boolean`, `todayISO(): string`, `monthsBetween(a: string, b: string): number`
+- Produces: `toISO(d: Date): string`, `fromISO(s: string): Date`, `addDays(iso: string, n: number): string`, `isValidISO(iso: string): boolean`, `nightsIn(range: DateRange): string[]`, `nightCount(range: DateRange): number`, `isWeekendNight(iso: string): boolean`, `todayISO(): string`, `monthsBetween(a: string, b: string): number`
+- `todayISO()` reads **local** calendar fields (a wall-clock question); everything else is UTC-anchored.
+- `nightsIn` compares timestamps, not strings, and returns `[]` for invalid input.
 
 All dates are handled as UTC-noon `Date` objects internally so daylight-saving shifts can never move a date across a boundary.
 
@@ -733,9 +913,11 @@ import {
   nightsIn,
   nightCount,
   isWeekendNight,
+  isValidISO,
   monthsBetween,
   fromISO,
   toISO,
+  todayISO,
 } from '../dates';
 
 describe('date helpers', () => {
@@ -779,6 +961,38 @@ describe('date helpers', () => {
     expect(monthsBetween('2026-07-26', '2027-07-26')).toBe(12);
     expect(monthsBetween('2026-07-26', '2026-08-25')).toBe(0);
   });
+
+  it('validates strict zero-padded ISO dates', () => {
+    expect(isValidISO('2026-08-14')).toBe(true);
+    expect(isValidISO('2026-8-4')).toBe(false);   // unpadded
+    expect(isValidISO('2026-02-30')).toBe(false); // not a real day
+    expect(isValidISO('2026-13-01')).toBe(false); // month rollover
+    expect(isValidISO('')).toBe(false);
+    expect(isValidISO('unset')).toBe(false);
+    expect(isValidISO('2026-08-14T00:00:00Z')).toBe(false);
+  });
+
+  it('returns no nights for invalid input instead of looping forever', () => {
+    // A string comparison would never terminate here: 'unset' sorts above every
+    // digit-leading date addDays can produce, so the loop would allocate to OOM.
+    expect(nightsIn({ checkIn: '2026-08-14', checkOut: 'unset' })).toEqual([]);
+    expect(nightsIn({ checkIn: 'junk', checkOut: '2026-08-20' })).toEqual([]);
+    expect(nightCount({ checkIn: '2026-08-14', checkOut: 'TBD' })).toBe(0);
+  });
+
+  it('counts nights correctly for unpadded-looking boundaries', () => {
+    // Unpadded input is rejected rather than silently yielding zero nights on a
+    // real stay, which a raw string comparison would have done.
+    expect(nightsIn({ checkIn: '2026-8-4', checkOut: '2026-08-14' })).toEqual([]);
+  });
+
+  it('reports today in the local calendar, not UTC', () => {
+    const now = new Date();
+    const expected = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+      now.getDate()
+    ).padStart(2, '0')}`;
+    expect(todayISO()).toBe(expected);
+  });
 });
 ```
 
@@ -814,15 +1028,44 @@ export function addDays(iso: string, n: number): string {
   return toISO(d);
 }
 
+/**
+ * Today in the USER'S LOCAL calendar, not UTC.
+ *
+ * `toISO(new Date())` would read UTC fields, so for anyone west of UTC during
+ * their afternoon/evening it returns tomorrow's date — which would disable the
+ * guest's actual today in the calendar. Local fields are correct here precisely
+ * because "today" is a wall-clock question, unlike the stored range values.
+ */
 export function todayISO(): string {
-  return toISO(new Date());
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-/** The nights actually slept: check-in inclusive, check-out exclusive. */
+/** Strict zero-padded ISO calendar date, and a real day (rejects 2026-02-30). */
+export function isValidISO(iso: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  return toISO(fromISO(iso)) === iso;
+}
+
+/**
+ * The nights actually slept: check-in inclusive, check-out exclusive.
+ *
+ * Compares timestamps rather than strings. A string comparison here can never
+ * terminate when `checkOut` is a non-date whose first character sorts above
+ * '9' (`'unset'`, `'TBD'`, `'Invalid Date'`), because `addDays` always returns
+ * a digit-leading string — the loop then allocates until the heap dies. Invalid
+ * input returns an empty list instead.
+ */
 export function nightsIn(range: DateRange): string[] {
+  if (!isValidISO(range.checkIn) || !isValidISO(range.checkOut)) return [];
+
+  const end = fromISO(range.checkOut).getTime();
   const out: string[] = [];
   let cursor = range.checkIn;
-  while (cursor < range.checkOut) {
+  while (fromISO(cursor).getTime() < end) {
     out.push(cursor);
     cursor = addDays(cursor, 1);
   }
@@ -854,7 +1097,7 @@ export function monthsBetween(a: string, b: string): number {
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- dates`
-Expected: PASS — 8 tests.
+Expected: PASS — 12 tests (8 original plus the 4 validation/local-today tests added after review).
 
 - [ ] **Step 5: Commit**
 
@@ -912,6 +1155,30 @@ describe('availability', () => {
     // 2026-09-06 is a Sunday.
     expect(isNightAvailable('celeste', '2026-09-06')).toBe(false);
     expect(isNightAvailable('celeste', '2026-09-13')).toBe(false);
+  });
+
+  it('applies the Sunday rule ON TOP OF the hash, not instead of it', () => {
+    // If the Sunday closure replaced the hash, celeste would be open on every
+    // non-Sunday. These are non-Sundays that the hash blocks.
+    expect(isNightAvailable('celeste', '2026-09-04')).toBe(false);
+    expect(isNightAvailable('celeste', '2026-09-10')).toBe(false);
+    expect(isNightAvailable('celeste', '2026-09-23')).toBe(false);
+  });
+
+  it('matches known golden values, pinning the hash and the modulus', () => {
+    // These lock the exact rule: FNV-1a offset basis 0x811c9dc5, prime
+    // 0x01000193, key `${suiteId}:${iso}`, and `% 7`. Changing the modulus to 5
+    // or 8, altering the prime, or reformatting the key all move these dates.
+    // Availability must be identical on every machine and every run.
+    expect(isNightAvailable('aurelia', '2026-09-14')).toBe(false);
+    expect(isNightAvailable('aurelia', '2026-09-26')).toBe(false);
+    expect(isNightAvailable('aurelia', '2026-09-01')).toBe(true);
+    expect(isNightAvailable('meridian', '2026-09-03')).toBe(false);
+    expect(isNightAvailable('meridian', '2026-09-16')).toBe(false);
+    expect(isNightAvailable('meridian', '2026-09-01')).toBe(true);
+    expect(isNightAvailable('atrium-loft', '2026-09-24')).toBe(false);
+    expect(isNightAvailable('atrium-loft', '2026-09-30')).toBe(false);
+    expect(isNightAvailable('atrium-loft', '2026-09-01')).toBe(true);
   });
 
   it('does not close other suites on Sundays as a rule', () => {
@@ -979,7 +1246,7 @@ export function isSuiteAvailable(suiteId: string, range: DateRange): boolean {
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- availability`
-Expected: PASS — 7 tests.
+Expected: PASS — 9 tests (7 original plus the Sunday-composition and golden-vector tests added after review).
 
 - [ ] **Step 5: Commit**
 
@@ -1005,7 +1272,8 @@ git commit -m "feat: add deterministic availability rules"
 ```ts
 // src/lib/__tests__/pricing.test.ts
 import { describe, it, expect } from 'vitest';
-import { quote, formatUSD } from '../pricing';
+import { quote, formatUSD, WEEKEND_MULTIPLIER, TAX_RATE } from '../pricing';
+import { addDays } from '../dates';
 import type { Suite } from '../../types';
 
 const suite: Suite = {
@@ -1063,17 +1331,58 @@ describe('quote', () => {
   });
 
   it('rounds to whole dollars', () => {
+    // A Friday night, so the uplift produces a genuinely fractional amount:
+    // 333 * 1.15 = 382.95. A midweek night would be an integer already and
+    // this assertion would pass even with the rounding removed.
     const odd: Suite = { ...suite, rate: 333 };
-    const q = quote(odd, { checkIn: '2026-08-17', checkOut: '2026-08-18' });
+    const q = quote(odd, { checkIn: '2026-08-14', checkOut: '2026-08-15' });
     expect(Number.isInteger(q.subtotal)).toBe(true);
     expect(Number.isInteger(q.tax)).toBe(true);
     expect(Number.isInteger(q.total)).toBe(true);
+    expect(q.subtotal).toBe(383);
+  });
+
+  it('computes the weekend uplift exactly for rates that are inexact in binary', () => {
+    // 850 is Aurelia's real rate. 850 * 1.15 evaluates to 977.4999999999999 in
+    // floating point, which rounds DOWN to 977 and undercharges by a dollar.
+    // Integer-cents arithmetic must give 978.
+    const aurelia: Suite = { ...suite, rate: 850 };
+    const q = quote(aurelia, { checkIn: '2026-08-14', checkOut: '2026-08-15' });
+    expect(q.subtotal).toBe(978);
+    expect(q.tax).toBe(117);
+    expect(q.total).toBe(1095);
+  });
+
+  it('always presents a breakdown that adds up', () => {
+    // The guest must never see subtotal + tax disagree with total.
+    for (const rate of [333, 760, 850, 980, 1150, 1850, 2400]) {
+      for (const nights of [1, 2, 3, 7, 14]) {
+        const s: Suite = { ...suite, rate };
+        const q = quote(s, { checkIn: '2026-08-14', checkOut: addDays('2026-08-14', nights) });
+        expect(q.subtotal + q.tax).toBe(q.total);
+        expect(q.nights).toBe(nights);
+      }
+    }
   });
 });
 
 describe('formatUSD', () => {
   it('formats with no decimals and a thousands separator', () => {
     expect(formatUSD(3696)).toBe('$3,696');
+  });
+});
+
+describe('advertised rates match charged rates', () => {
+  it('derives the display constants from the integer arithmetic', () => {
+    // If these were hand-written they could drift from WEEKEND_CENTS/TAX_PERCENT,
+    // and the UI would advertise a rate the guest is not actually charged.
+    expect(WEEKEND_MULTIPLIER).toBe(1.15);
+    expect(TAX_RATE).toBe(0.12);
+
+    // Prove they describe the real arithmetic rather than sitting beside it.
+    const oneFriday = quote(suite, { checkIn: '2026-08-14', checkOut: '2026-08-15' });
+    expect(oneFriday.subtotal).toBe(Math.round(suite.rate * WEEKEND_MULTIPLIER));
+    expect(oneFriday.tax).toBe(Math.round(oneFriday.subtotal * TAX_RATE));
   });
 });
 ```
@@ -1089,8 +1398,25 @@ Expected: FAIL — cannot resolve `../pricing`.
 import type { DateRange, Suite } from '../types';
 import { isWeekendNight, nightsIn } from './dates';
 
-export const WEEKEND_MULTIPLIER = 1.15;
-export const TAX_RATE = 0.12;
+/**
+ * Integer cents, used for the actual money maths.
+ *
+ * `rate * 1.15` is not exact in binary: `850 * 1.15 === 977.4999999999999`,
+ * which `Math.round` takes DOWN to 977 and silently undercharges by a dollar.
+ * 850 is a real suite rate (Aurelia), so this is not hypothetical. Rates are
+ * whole dollars, so `rate * 115` is exact integer cents.
+ */
+const WEEKEND_CENTS = 115;
+const MIDWEEK_CENTS = 100;
+const TAX_PERCENT = 12;
+
+/**
+ * Derived from the integer constants above, never hand-written, so UI copy can
+ * never advertise a different rate from the one actually charged. Both
+ * divisions are exact in IEEE-754 (115/100 === 1.15, 12/100 === 0.12).
+ */
+export const WEEKEND_MULTIPLIER = WEEKEND_CENTS / MIDWEEK_CENTS;
+export const TAX_RATE = TAX_PERCENT / 100;
 
 export type Quote = {
   nights: number;
@@ -1113,6 +1439,10 @@ export function formatUSD(n: number): string {
 /**
  * Order is fixed by spec: per-night uplift, then subtotal, then tax on the
  * uplifted subtotal. Taxing before the uplift would understate the total.
+ *
+ * All arithmetic runs in integer cents so no float tie can lose a dollar.
+ * `total` is derived as `subtotal + tax` rather than recomputed from cents, so
+ * the breakdown the guest sees always adds up to the figure they are charged.
  */
 export function quote(suite: Suite, range: DateRange): Quote {
   const nights = nightsIn(range);
@@ -1120,13 +1450,14 @@ export function quote(suite: Suite, range: DateRange): Quote {
     return { nights: 0, subtotal: 0, tax: 0, total: 0 };
   }
 
-  const subtotal = Math.round(
-    nights.reduce(
-      (sum, night) => sum + suite.rate * (isWeekendNight(night) ? WEEKEND_MULTIPLIER : 1),
-      0
-    )
+  const subtotalCents = nights.reduce(
+    (sum, night) => sum + suite.rate * (isWeekendNight(night) ? WEEKEND_CENTS : MIDWEEK_CENTS),
+    0
   );
-  const tax = Math.round(subtotal * TAX_RATE);
+  const taxCents = Math.round((subtotalCents * TAX_PERCENT) / 100);
+
+  const subtotal = Math.round(subtotalCents / 100);
+  const tax = Math.round(taxCents / 100);
 
   return { nights: nights.length, subtotal, tax, total: subtotal + tax };
 }
@@ -1135,7 +1466,7 @@ export function quote(suite: Suite, range: DateRange): Quote {
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- pricing`
-Expected: PASS — 8 tests.
+Expected: PASS — 10 tests (6 original plus the integer-cents, breakdown-sums and Friday-rounding tests added after review).
 
 - [ ] **Step 5: Commit**
 
@@ -1285,6 +1616,65 @@ describe('validateBooking', () => {
     expect(errors).toContain('TOO_MANY_GUESTS');
   });
 
+  it('accepts a check-in today', () => {
+    // Same-day arrival is the most common booking. Without this, tightening the
+    // comparison to `<=` would reject it and no test would notice.
+    const errors = validateBooking({
+      suite,
+      range: { checkIn: TODAY, checkOut: '2026-07-28' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(errors).not.toContain('PAST_CHECKIN');
+  });
+
+  it('does not blame availability when no dates have been chosen', () => {
+    // isSuiteAvailable returns false for an empty range as well as a blocked
+    // one, so without the `nights >= 1` guard a guest who has picked nothing is
+    // told the suite is unavailable.
+    const errors = validateBooking({
+      suite,
+      range: { checkIn: '', checkOut: '' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(errors).not.toContain('SUITE_UNAVAILABLE');
+    expect(errors).toContain('CHECKOUT_NOT_AFTER_CHECKIN');
+  });
+
+  it('pins the twelve-month boundary on both sides', () => {
+    // Exactly 12 months out is rejected; one day under is accepted. This holds
+    // the `>=`, the threshold value, and the direction all in place.
+    const atLimit = validateBooking({
+      suite,
+      range: { checkIn: '2027-07-26', checkOut: '2027-07-28' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(atLimit).toContain('TOO_FAR_AHEAD');
+
+    const justUnder = validateBooking({
+      suite,
+      range: { checkIn: '2027-07-25', checkOut: '2027-07-27' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(justUnder).not.toContain('TOO_FAR_AHEAD');
+  });
+
+  it('never reports TOO_FAR_AHEAD for a check-in in the past', () => {
+    // monthsBetween returns a negative number here. Wrapping it in Math.abs
+    // would turn a year-old date into a "too far ahead" error.
+    const errors = validateBooking({
+      suite,
+      range: { checkIn: '2025-07-26', checkOut: '2025-07-28' },
+      guests: 2,
+      today: TODAY,
+    });
+    expect(errors).toContain('PAST_CHECKIN');
+    expect(errors).not.toContain('TOO_FAR_AHEAD');
+  });
+
   it('has a human message for every error code', () => {
     const codes = [
       'PAST_CHECKIN',
@@ -1392,7 +1782,7 @@ git commit -m "feat: add booking validation rules"
 
 ```ts
 // src/lib/__tests__/code.test.ts
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { generateCode, CODE_ALPHABET } from '../code';
 
 describe('generateCode', () => {
@@ -1416,6 +1806,29 @@ describe('generateCode', () => {
     for (let i = 0; i < 50; i++) {
       expect(generateCode(taken)).not.toBe(first);
     }
+  });
+
+  it('really consults the taken set, proven with a deterministic RNG', () => {
+    // The test above cannot fail by accident: a random 32^6 draw collides with
+    // the one taken code at p ~ 1e-9, so deleting the collision check survives
+    // it. Pinning Math.random makes the first candidate collide for certain.
+    // First 6 draws -> index 0 ('2') => MR-222222, which is taken.
+    // Next 6 draws  -> index 1 ('3') => MR-333333, which is free.
+    let call = 0;
+    const spy = vi.spyOn(Math, 'random').mockImplementation(() => (call++ < 6 ? 0 : 1 / 32));
+
+    expect(generateCode(new Set(['MR-222222']))).toBe('MR-333333');
+
+    spy.mockRestore();
+  });
+
+  it('returns the first candidate when nothing is taken', () => {
+    let call = 0;
+    const spy = vi.spyOn(Math, 'random').mockImplementation(() => (call++ < 6 ? 0 : 1 / 32));
+
+    expect(generateCode()).toBe('MR-222222');
+
+    spy.mockRestore();
   });
 });
 ```
@@ -1446,8 +1859,9 @@ export function generateCode(taken: Set<string> = new Set()): string {
     const code = `MR-${randomBody()}`;
     if (!taken.has(code)) return code;
   }
-  // Exhausted attempts: fall back to a timestamp-suffixed code, still in-alphabet.
-  return `MR-${randomBody(3)}${randomBody(3)}`;
+  // Unreachable in practice. Emits one more in-alphabet code rather than
+  // throwing, so a caller can never be left without a reference to show.
+  return `MR-${randomBody()}`;
 }
 ```
 
@@ -1511,6 +1925,32 @@ describe('reservation storage', () => {
     expect(loadReservations()).toHaveLength(1);
   });
 
+  it('keeps earlier reservations when another is saved', () => {
+    // Without this, replacing the merge with `[reservation]` — wiping every
+    // prior booking on each save — passes the whole suite. Silent data loss.
+    saveReservation(sample);
+    saveReservation({ ...sample, code: 'MR-DEF345', guestName: 'B Guest' });
+
+    const all = loadReservations();
+    expect(all).toHaveLength(2);
+    expect(findReservation('MR-ABC234')?.guestName).toBe('A Guest');
+    expect(findReservation('MR-DEF345')?.guestName).toBe('B Guest');
+  });
+
+  it('overwrites in place when the same code is saved twice', () => {
+    saveReservation(sample);
+    saveReservation({ ...sample, guestName: 'Renamed' });
+
+    expect(loadReservations()).toHaveLength(1);
+    expect(findReservation('MR-ABC234')?.guestName).toBe('Renamed');
+  });
+
+  it('reports storage as persistent after a successful write', () => {
+    // Pins the true case; otherwise a hardcoded `return false` passes.
+    saveReservation(sample);
+    expect(isPersistent()).toBe(true);
+  });
+
   it('survives localStorage throwing on write, as in Safari private mode', () => {
     vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
       throw new DOMException('QuotaExceededError');
@@ -1535,7 +1975,13 @@ import type { Reservation } from '../types';
 
 const KEY = 'meridian.reservations';
 
-/** Populated whenever localStorage is unusable so the session still works. */
+/**
+ * Holds ONLY the reservations that could not be written to localStorage, so the
+ * session still works when storage is unusable. Deliberately not a mirror of
+ * everything saved: a mirror is a second source of truth that outlives the
+ * store it shadows, so a cleared or corrupt localStorage would still report
+ * reservations the guest can no longer actually retrieve.
+ */
 let memory: Reservation[] = [];
 let persistent = true;
 
@@ -1582,7 +2028,6 @@ export function loadReservations(): Reservation[] {
 }
 
 export function saveReservation(reservation: Reservation): void {
-  memory = [...memory.filter((r) => r.code !== reservation.code), reservation];
   try {
     const persisted = (() => {
       try {
@@ -1596,8 +2041,12 @@ export function saveReservation(reservation: Reservation): void {
     const next = [...persisted.filter((r) => r.code !== reservation.code), reservation];
     window.localStorage.setItem(KEY, JSON.stringify(next));
     persistent = true;
+    // Durably stored now, so drop any earlier unpersisted copy of the same code
+    // rather than letting it surface again as a duplicate on the next read.
+    memory = memory.filter((r) => r.code !== reservation.code);
   } catch {
-    // Safari private browsing throws on setItem. The reservation stays in memory.
+    // Safari private browsing throws on setItem. Keep it for this session only.
+    memory = [...memory.filter((r) => r.code !== reservation.code), reservation];
     persistent = false;
   }
 }
@@ -1637,8 +2086,15 @@ Unknown paths resolve to `{ name: 'landing' }` rather than throwing, which is wh
 
 ```ts
 // src/state/__tests__/history.test.ts
-import { describe, it, expect } from 'vitest';
-import { parsePath, viewToPath } from '../history';
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  parsePath,
+  viewToPath,
+  pushView,
+  replaceView,
+  onPopState,
+  type View,
+} from '../history';
 
 describe('parsePath', () => {
   it('parses the landing page', () => {
@@ -1686,6 +2142,76 @@ describe('viewToPath', () => {
     for (const v of views) {
       expect(parsePath(viewToPath(v))).toEqual(v);
     }
+  });
+
+  it('maps landing to exactly the root path', () => {
+    // The round-trip test cannot pin this: any unrecognised path also parses
+    // back to landing, so '/home' would round-trip just as happily.
+    expect(viewToPath({ name: 'landing' })).toBe('/');
+  });
+
+  it('only treats a literal /reserve segment as the reserve view', () => {
+    expect(parsePath('/suites/aurelia/anything-else')).toEqual({ name: 'landing' });
+    expect(parsePath('/suites/aurelia/reserve')).toEqual({
+      name: 'reserve',
+      suiteId: 'aurelia',
+    });
+  });
+});
+
+describe('browser history integration', () => {
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('pushView adds a history entry and changes the path', () => {
+    const before = window.history.length;
+    pushView({ name: 'suite', suiteId: 'aurelia' });
+
+    expect(window.location.pathname).toBe('/suites/aurelia');
+    expect(window.history.length).toBeGreaterThan(before);
+  });
+
+  it('replaceView changes the path without adding an entry', () => {
+    const before = window.history.length;
+    replaceView({ name: 'suite', suiteId: 'celeste' });
+
+    expect(window.location.pathname).toBe('/suites/celeste');
+    expect(window.history.length).toBe(before);
+  });
+
+  it('onPopState reports the view parsed from the current path', () => {
+    const seen: View[] = [];
+    const unsubscribe = onPopState((v) => seen.push(v));
+
+    window.history.replaceState({}, '', '/suites/meridian');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+
+    expect(seen).toEqual([{ name: 'suite', suiteId: 'meridian' }]);
+    unsubscribe();
+  });
+
+  it('onPopState stops reporting after unsubscribe', () => {
+    const seen: View[] = [];
+    const unsubscribe = onPopState((v) => seen.push(v));
+    unsubscribe();
+
+    window.history.replaceState({}, '', '/suites/aurelia');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+
+    expect(seen).toEqual([]);
+  });
+
+  it('parses the pathname only, never the full href', () => {
+    // Reading location.href here would split the origin into segments and every
+    // back/forward would land on the landing view.
+    window.history.replaceState({}, '', '/reservation/mr-abc234');
+    const seen: View[] = [];
+    const unsubscribe = onPopState((v) => seen.push(v));
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    unsubscribe();
+
+    expect(seen).toEqual([{ name: 'confirmation', code: 'MR-ABC234' }]);
   });
 });
 ```
@@ -1758,7 +2284,7 @@ export function onPopState(cb: (view: View) => void): () => void {
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- history`
-Expected: PASS — 8 tests.
+Expected: PASS — 14 tests (7 parse/round-trip plus the browser-history integration block added after review).
 
 - [ ] **Step 5: Add dev-server history fallback**
 
@@ -1873,10 +2399,28 @@ describe('bookingReducer', () => {
   });
 
   it('clears dates', () => {
+    // Both ends must be set first. With only a check-in, checkOut is already
+    // null and the second assertion proves nothing — a CLEAR_DATES that forgot
+    // to clear checkOut would pass.
     let s = bookingReducer(base, { type: 'PICK_DATE', date: '2026-08-17' });
+    s = bookingReducer(s, { type: 'PICK_DATE', date: '2026-08-20' });
+    expect(s.checkIn).toBe('2026-08-17');
+    expect(s.checkOut).toBe('2026-08-20');
+
     s = bookingReducer(s, { type: 'CLEAR_DATES' });
     expect(s.checkIn).toBeNull();
     expect(s.checkOut).toBeNull();
+  });
+
+  it('rejects a non-finite guest count instead of storing NaN', () => {
+    // NaN would pass validation silently (NaN > maxGuests is false) and become
+    // null in storage.
+    expect(bookingReducer(base, { type: 'SET_GUESTS', guests: NaN }).guests).toBe(1);
+    expect(bookingReducer(base, { type: 'SET_GUESTS', guests: Infinity }).guests).toBe(1);
+  });
+
+  it('floors a fractional guest count', () => {
+    expect(bookingReducer(base, { type: 'SET_GUESTS', guests: 2.9 }).guests).toBe(2);
   });
 });
 ```
@@ -1944,11 +2488,17 @@ export function bookingReducer(state: BookingState, action: BookingAction): Book
     case 'CLEAR_DATES':
       return { ...state, checkIn: null, checkOut: null };
 
-    case 'SET_GUESTS':
+    case 'SET_GUESTS': {
+      // NaN must be rejected before clamping: Math.min(4, Math.max(1, NaN)) is
+      // NaN, and NaN survives downstream unnoticed — `NaN > maxGuests` is false
+      // so validation raises nothing, and JSON.stringify turns it into null.
+      // Reachable the moment a UI does Number(input.value) on a cleared field.
+      if (!Number.isFinite(action.guests)) return { ...state, guests: 1 };
       return {
         ...state,
         guests: Math.min(MAX_SUITE_CAPACITY, Math.max(1, Math.floor(action.guests))),
       };
+    }
 
     case 'SET_GUEST_NAME':
       return { ...state, guestName: action.value };
@@ -2008,10 +2558,89 @@ export function useBooking(): BookingContextValue {
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 5: Write the provider test**
 
-Run: `npm test -- bookingReducer`
-Expected: PASS — 12 tests.
+`BookingProvider` has behaviour that neither `tsc` nor the reducer tests can
+reach. Two mutations are invisible to both: swapping `checkIn`/`checkOut` when
+building `range` — which would invert every date range in the app — and
+`useBooking` silently returning `undefined` instead of throwing.
+
+```tsx
+// src/state/__tests__/BookingProvider.test.tsx
+import { describe, it, expect, beforeEach } from 'vitest';
+import { render, screen, act } from '@testing-library/react';
+import { BookingProvider, useBooking } from '../BookingProvider';
+
+function Probe() {
+  const { state, dispatch, range } = useBooking();
+  return (
+    <div>
+      <span data-testid="view">{state.view.name}</span>
+      <span data-testid="range">{range ? `${range.checkIn}..${range.checkOut}` : 'none'}</span>
+      <span data-testid="guests">{state.guests}</span>
+      <button onClick={() => dispatch({ type: 'PICK_DATE', date: '2026-08-17' })}>in</button>
+      <button onClick={() => dispatch({ type: 'PICK_DATE', date: '2026-08-20' })}>out</button>
+    </div>
+  );
+}
+
+describe('BookingProvider', () => {
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('seeds the view from the current URL', () => {
+    window.history.replaceState({}, '', '/suites/aurelia');
+    render(
+      <BookingProvider>
+        <Probe />
+      </BookingProvider>
+    );
+    expect(screen.getByTestId('view')).toHaveTextContent('suite');
+  });
+
+  it('falls back to landing for an unrecognised URL without throwing', () => {
+    window.history.replaceState({}, '', '/utter/nonsense');
+    render(
+      <BookingProvider>
+        <Probe />
+      </BookingProvider>
+    );
+    expect(screen.getByTestId('view')).toHaveTextContent('landing');
+  });
+
+  it('exposes range as none until both ends are chosen, in the right order', () => {
+    render(
+      <BookingProvider>
+        <Probe />
+      </BookingProvider>
+    );
+    expect(screen.getByTestId('range')).toHaveTextContent('none');
+
+    act(() => {
+      screen.getByRole('button', { name: 'in' }).click();
+    });
+    expect(screen.getByTestId('range')).toHaveTextContent('none');
+
+    act(() => {
+      screen.getByRole('button', { name: 'out' }).click();
+    });
+    // Order matters: a swapped range object would read '2026-08-20..2026-08-17'
+    // and invert every stay in the app.
+    expect(screen.getByTestId('range')).toHaveTextContent('2026-08-17..2026-08-20');
+  });
+
+  it('throws a clear error when used outside the provider', () => {
+    // Without the throw this is an undefined deref deep inside a view.
+    expect(() => render(<Probe />)).toThrow(/must be used inside BookingProvider/);
+  });
+});
+```
+
+- [ ] **Step 6: Run tests**
+
+Run: `npm test -- bookingReducer BookingProvider`
+Expected: PASS — 14 reducer tests and 4 provider tests.
 
 - [ ] **Step 6: Commit**
 
@@ -2030,7 +2659,8 @@ git commit -m "feat: add booking reducer and provider"
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `SmartImage` accepting `{ src: string; alt: string; className?: string; style?: React.CSSProperties; sizes?: string }`
+- Produces: `SmartImage` accepting `{ src: string; alt: string; className?: string; style?: React.CSSProperties; sizes?: string; eager?: boolean }`
+- `eager` defaults to `false` (so images are `loading="lazy"`). Pass `eager` for above-the-fold hero photography, or the LCP image is needlessly deferred. Tasks 14 and 15 both need it.
 
 Photography carries the whole visual design, so a failed load must degrade to something intentional rather than a broken-image icon.
 
@@ -2060,6 +2690,52 @@ describe('SmartImage', () => {
     const img = screen.getByAltText('A suite');
     expect(img).toHaveAttribute('loading', 'lazy');
     expect(img).toHaveAttribute('decoding', 'async');
+  });
+
+  it('loads eagerly when asked, for above-the-fold photography', () => {
+    render(<SmartImage src="https://images.unsplash.com/photo-x" alt="A suite" eager />);
+    expect(screen.getByAltText('A suite')).toHaveAttribute('loading', 'eager');
+  });
+
+  it('recovers when the src changes after a failure', () => {
+    // A bare `failed` boolean would leave the fallback in place forever, so a
+    // gallery reusing one instance loses the slot to a single transient error.
+    const { rerender } = render(
+      <SmartImage src="https://images.unsplash.com/broken" alt="A suite" />
+    );
+    fireEvent.error(screen.getByAltText('A suite'));
+    expect(screen.queryByAltText('A suite')).not.toBeInTheDocument();
+
+    rerender(<SmartImage src="https://images.unsplash.com/working" alt="A suite" />);
+    expect(screen.getByAltText('A suite')).toBeInTheDocument();
+  });
+
+  it('forwards className and style to both the image and the fallback', () => {
+    const { rerender } = render(
+      <SmartImage
+        src="https://images.unsplash.com/photo-x"
+        alt="A suite"
+        className="hero"
+        style={{ opacity: 0.5 }}
+      />
+    );
+    expect(screen.getByAltText('A suite')).toHaveClass('smart-image', 'hero');
+
+    fireEvent.error(screen.getByAltText('A suite'));
+    const fallback = screen.getByRole('img', { name: 'A suite' });
+    expect(fallback).toHaveClass('smart-image-fallback', 'hero');
+    expect(fallback).toHaveStyle({ opacity: '0.5' });
+
+    rerender(
+      <SmartImage src="https://images.unsplash.com/photo-x" alt="A suite" />
+    );
+  });
+
+  it('hides a decorative image from assistive tech when it fails', () => {
+    // An img role with an empty accessible name is worse than <img alt="">.
+    render(<SmartImage src="https://images.unsplash.com/broken" alt="" />);
+    fireEvent.error(screen.getByRole('presentation', { hidden: true }));
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
   });
 });
 ```
@@ -2104,16 +2780,23 @@ type Props = {
 };
 
 export function SmartImage({ src, alt, className, style, sizes, eager = false }: Props) {
-  const [failed, setFailed] = useState(false);
+  // Keyed to the src, not a bare boolean. A plain `failed` flag never resets, so
+  // one transient error would leave the fallback in place forever even after the
+  // caller swaps in a working URL — which is exactly what a gallery does.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const failed = failedSrc === src;
+
+  const cls = (base: string) => (className ? `${base} ${className}` : base);
 
   if (failed) {
     // role="img" with aria-label keeps the alternative text available to
-    // assistive tech even though there is no longer an <img> element.
+    // assistive tech even though there is no longer an <img> element. A
+    // decorative image (alt="") must instead leave the tree entirely: an img
+    // role with an empty name is worse than the <img alt=""> it replaced.
     return (
       <div
-        role="img"
-        aria-label={alt}
-        className={`smart-image-fallback ${className ?? ''}`}
+        {...(alt ? { role: 'img', 'aria-label': alt } : { 'aria-hidden': true })}
+        className={cls('smart-image-fallback')}
         style={style}
       />
     );
@@ -2124,11 +2807,11 @@ export function SmartImage({ src, alt, className, style, sizes, eager = false }:
       src={src}
       alt={alt}
       sizes={sizes}
-      className={`smart-image ${className ?? ''}`}
+      className={cls('smart-image')}
       style={style}
       loading={eager ? 'eager' : 'lazy'}
       decoding="async"
-      onError={() => setFailed(true)}
+      onError={() => setFailedSrc(src)}
     />
   );
 }
@@ -2165,8 +2848,13 @@ Keyboard model: arrow keys move focus by day and week, `Home`/`End` jump to week
 ```tsx
 // src/components/__tests__/Calendar.test.tsx
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { Calendar } from '../Calendar';
+
+// A raw element.focus() fires the cell's onFocus, which calls setFocusDate — a
+// React state update. Outside act() that produces an "update was not wrapped in
+// act(...)" warning, which is noise that hides real problems in later suites.
+const focus = (el: HTMLElement) => act(() => el.focus());
 
 const TODAY = '2026-08-10'; // a Monday
 
@@ -2230,7 +2918,7 @@ describe('Calendar', () => {
   it('moves focus with the right arrow key', () => {
     setup();
     const day17 = screen.getByRole('gridcell', { name: /^17 / });
-    day17.focus();
+    focus(day17);
     fireEvent.keyDown(day17, { key: 'ArrowRight' });
     expect(screen.getByRole('gridcell', { name: /^18 / })).toHaveFocus();
   });
@@ -2238,7 +2926,7 @@ describe('Calendar', () => {
   it('moves focus by a week with the down arrow key', () => {
     setup();
     const day17 = screen.getByRole('gridcell', { name: /^17 / });
-    day17.focus();
+    focus(day17);
     fireEvent.keyDown(day17, { key: 'ArrowDown' });
     expect(screen.getByRole('gridcell', { name: /^24 / })).toHaveFocus();
   });
@@ -2246,7 +2934,7 @@ describe('Calendar', () => {
   it('selects with Enter', () => {
     const { onPickDate } = setup();
     const day17 = screen.getByRole('gridcell', { name: /^17 / });
-    day17.focus();
+    focus(day17);
     fireEvent.keyDown(day17, { key: 'Enter' });
     expect(onPickDate).toHaveBeenCalledWith('2026-08-17');
   });
@@ -2276,6 +2964,115 @@ describe('Calendar', () => {
     setup({ suiteId: 'celeste' });
     const sunday = screen.getByRole('gridcell', { name: /^16 / });
     expect(sunday.getAttribute('aria-label')).toMatch(/unavailable/i);
+  });
+
+  it('keeps exactly one tab stop after navigating months by button', () => {
+    // The roving tabindex is `iso === focusDate`. If month navigation moves the
+    // cursor but leaves focusDate behind, NO rendered cell matches and the grid
+    // has zero tab stops — a keyboard guest cannot reach any date at all.
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: /next month/i }));
+
+    const tabbable = screen
+      .getAllByRole('gridcell')
+      .filter((c) => c.getAttribute('tabindex') === '0');
+    expect(tabbable).toHaveLength(1);
+  });
+
+  it('exposes rows, as role=grid requires', () => {
+    // grid -> row -> gridcell. Without rows, columnheader has no valid context.
+    setup();
+    const rows = screen.getAllByRole('row');
+    expect(rows.length).toBeGreaterThan(1);
+    expect(screen.getAllByRole('columnheader')).toHaveLength(7);
+  });
+
+  it('moves focus back a day with the left arrow', () => {
+    setup();
+    const day18 = screen.getByRole('gridcell', { name: /^18 / });
+    focus(day18);
+    fireEvent.keyDown(day18, { key: 'ArrowLeft' });
+    expect(screen.getByRole('gridcell', { name: /^17 / })).toHaveFocus();
+  });
+
+  it('gives each calendar instance its own caption id', () => {
+    // A hardcoded id would collide if two calendars were ever mounted together,
+    // leaving aria-describedby ambiguous.
+    render(
+      <>
+        <Calendar suiteId="aurelia" checkIn={null} checkOut={null} onPickDate={() => {}} today={TODAY} />
+        <Calendar suiteId="meridian" checkIn={null} checkOut={null} onPickDate={() => {}} today={TODAY} />
+      </>
+    );
+    const grids = screen.getAllByRole('grid');
+    const ids = grids.map((g) => g.getAttribute('aria-describedby'));
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ids) {
+      expect(document.querySelectorAll(`#${CSS.escape(id!)}`)).toHaveLength(1);
+    }
+  });
+
+  it('moves focus back a week with the up arrow', () => {
+    setup();
+    const day24 = screen.getByRole('gridcell', { name: /^24 / });
+    focus(day24);
+    fireEvent.keyDown(day24, { key: 'ArrowUp' });
+    expect(screen.getByRole('gridcell', { name: /^17 / })).toHaveFocus();
+  });
+
+  it('moves to the week bounds with Home and End', () => {
+    setup();
+    // 2026-08-19 is a Wednesday; the Monday-first week runs 17..23.
+    const day19 = screen.getByRole('gridcell', { name: /^19 / });
+    focus(day19);
+    fireEvent.keyDown(day19, { key: 'Home' });
+    expect(screen.getByRole('gridcell', { name: /^17 / })).toHaveFocus();
+
+    const day17 = screen.getByRole('gridcell', { name: /^17 / });
+    fireEvent.keyDown(day17, { key: 'End' });
+    expect(screen.getByRole('gridcell', { name: /^23 / })).toHaveFocus();
+  });
+
+  it('PageDown moves a whole month and clamps to the month length', () => {
+    // Day arithmetic would add 31 and land on 1 October, skipping September.
+    setup({ checkIn: '2026-08-31' });
+    const day31 = screen.getByRole('gridcell', { name: /^31 August/ });
+    focus(day31);
+    fireEvent.keyDown(day31, { key: 'PageDown' });
+
+    expect(screen.getByText(/September 2026/i)).toBeInTheDocument();
+    expect(screen.getByRole('gridcell', { name: /^30 September/ })).toHaveFocus();
+  });
+
+  it('PageUp moves a whole month even from a long month', () => {
+    // Subtracting February's 28 days from 30 March lands on 2 March — still in
+    // March, so the key looks broken.
+    setup({ checkIn: '2027-03-30' });
+    const day30 = screen.getByRole('gridcell', { name: /^30 March/ });
+    focus(day30);
+    fireEvent.keyDown(day30, { key: 'PageUp' });
+
+    expect(screen.getByText(/February 2027/i)).toBeInTheDocument();
+    expect(screen.getByRole('gridcell', { name: /^28 February/ })).toHaveFocus();
+  });
+
+  it('refuses to select an unavailable date by keyboard as well as by click', () => {
+    // The click path was covered; Enter and Space were not.
+    const { onPickDate } = setup({ suiteId: 'celeste' });
+    const sunday = screen.getByRole('gridcell', { name: /^16 / });
+    focus(sunday);
+
+    fireEvent.keyDown(sunday, { key: 'Enter' });
+    fireEvent.keyDown(sunday, { key: ' ' });
+    expect(onPickDate).not.toHaveBeenCalled();
+  });
+
+  it('marks today with aria-current', () => {
+    setup();
+    expect(screen.getByRole('gridcell', { name: /^10 August/ })).toHaveAttribute(
+      'aria-current',
+      'date'
+    );
   });
 });
 ```
@@ -2319,7 +3116,15 @@ Expected: FAIL — cannot resolve `../Calendar`.
   cursor: not-allowed;
 }
 
+/* The grid is a stack of rows; each row lays out its own 7 columns, because
+   role="grid" requires grid -> row -> gridcell. */
 .calendar-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.calendar-row {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 2px;
@@ -2346,10 +3151,21 @@ Expected: FAIL — cannot resolve `../Calendar`.
   cursor: pointer;
 }
 
+/* --caption is 6.22:1 on --panel, so unbookable dates still clear WCAG AA.
+   The previous #55524d measured 2.32:1, and these cells stay in the
+   accessibility tree and remain arrow-reachable, so the inactive-control
+   exemption does not apply to them. */
 .calendar-day[aria-disabled='true'] {
-  color: #55524d;
+  color: var(--caption);
   cursor: not-allowed;
   text-decoration: line-through;
+}
+
+/* 0.7 alpha blends to rgb(147,120,35) = 4.25:1 against --panel, clearing the
+   3:1 threshold for a non-text indicator. At 0.45 it measured 2.49:1, and this
+   ring is the only VISUAL cue for today (aria-current covers assistive tech). */
+.calendar-day.is-today {
+  box-shadow: inset 0 0 0 1px rgba(201, 162, 39, 0.7);
 }
 
 .calendar-day[aria-selected='true'] {
@@ -2369,8 +3185,12 @@ Expected: FAIL — cannot resolve `../Calendar`.
 - [ ] **Step 4: Implement `src/components/Calendar.tsx`**
 
 ```tsx
-import { useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { addDays, fromISO, toISO, todayISO } from '../lib/dates';
+import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+// Note: toISO is deliberately NOT imported — Calendar never calls it, and
+// `noUnusedLocals` turns an unused import into a build failure (TS6133).
+// Same for useReducedMotion: the Calendar has no animation, so there is nothing
+// to gate and the "static equivalent" requirement is satisfied vacuously.
+import { addDays, fromISO, todayISO } from '../lib/dates';
 import { isNightAvailable } from '../lib/availability';
 import './Calendar.css';
 
@@ -2407,18 +3227,72 @@ function monthLabel(iso: string): string {
   });
 }
 
+/**
+ * Shift by whole months, clamping the day to the target month's length.
+ *
+ * PageUp/PageDown must NOT be day arithmetic. Adding `daysInMonth(iso)` skips
+ * September entirely from 31 August, skips February from 31 January, and from
+ * 30 March lands back in March — so the key appears dead for three days a year.
+ */
+function addMonths(iso: string, n: number): string {
+  const d = fromISO(iso);
+  const first = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1, 12));
+  const ym = `${first.getUTCFullYear()}-${String(first.getUTCMonth() + 1).padStart(2, '0')}`;
+  const day = Math.min(d.getUTCDate(), daysInMonth(`${ym}-01`));
+  return `${ym}-${String(day).padStart(2, '0')}`;
+}
+
 export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Props) {
   const todayIso = today ?? todayISO();
+  // A hardcoded id would duplicate if two Calendars ever mount together, which
+  // makes aria-describedby ambiguous. useId is per-instance.
+  const captionId = useId();
   const [cursor, setCursor] = useState(() => startOfMonth(checkIn ?? todayIso));
   const [focusDate, setFocusDate] = useState<string>(checkIn ?? todayIso);
   const gridRef = useRef<HTMLDivElement>(null);
+  // Only a keyboard move may pull DOM focus. Without this gate the calendar
+  // would steal focus on mount and on every unrelated re-render.
+  const pendingFocus = useRef(false);
+
+  /**
+   * Focus follows the roving tabindex, so it can only be applied once the new
+   * tabIndex values are committed to the DOM.
+   *
+   * This MUST be a layout effect — not requestAnimationFrame, and not
+   * queueMicrotask. React flushes layout effects synchronously as part of the
+   * commit, so focus lands inside the same act() scope that dispatched the key
+   * event. rAF waits on jsdom's ~16ms visual clock, and a microtask needs the
+   * JS stack to unwind, which never happens inside fireEvent's synchronous
+   * act(). Both leave focus on the previous cell — and in a real browser, one
+   * frame of visible lag.
+   */
+  useLayoutEffect(() => {
+    if (!pendingFocus.current) return;
+    pendingFocus.current = false;
+    gridRef.current?.querySelector<HTMLElement>(`[data-date="${focusDate}"]`)?.focus();
+  }, [focusDate]);
 
   const days = useMemo(() => {
     const total = daysInMonth(cursor);
     return Array.from({ length: total }, (_, i) => addDays(cursor, i));
   }, [cursor]);
 
-  const leadingBlanks = mondayIndex(cursor);
+  /**
+   * Weeks of 7, padded at both ends with nulls.
+   *
+   * A `role="grid"` must own rows: grid -> row -> gridcell. With cells as direct
+   * children there are no rows at all, and `columnheader` has no valid context.
+   */
+  const weeks = useMemo(() => {
+    const cells: (string | null)[] = [
+      ...Array.from({ length: mondayIndex(cursor) }, () => null),
+      ...days,
+    ];
+    while (cells.length % 7 !== 0) cells.push(null);
+    const out: (string | null)[][] = [];
+    for (let i = 0; i < cells.length; i += 7) out.push(cells.slice(i, i + 7));
+    return out;
+  }, [cursor, days]);
 
   function isInRange(iso: string): boolean {
     if (!checkIn) return false;
@@ -2431,18 +3305,37 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
     return isNightAvailable(suiteId, iso);
   }
 
-  function move(from: string, delta: number) {
-    const next = addDays(from, delta);
+  function moveTo(from: string, next: string) {
+    // A no-op move (Home on a Monday, End on a Sunday) would leave the
+    // pending-focus flag armed with no commit to consume it, so a later
+    // unrelated re-render would steal focus.
+    if (next === from) return;
+    pendingFocus.current = true;
     setFocusDate(next);
     if (next.slice(0, 7) !== cursor.slice(0, 7)) {
       setCursor(startOfMonth(next));
     }
-    // Focus must follow the roving tabindex, which lands after the re-render.
-    requestAnimationFrame(() => {
-      gridRef.current
-        ?.querySelector<HTMLElement>(`[data-date="${next}"]`)
-        ?.focus();
-    });
+  }
+
+  function move(from: string, delta: number) {
+    moveTo(from, addDays(from, delta));
+  }
+
+  /**
+   * Month navigation by button must also move `focusDate` into the new month.
+   *
+   * The roving tabindex is `iso === focusDate`, so leaving focusDate behind in
+   * the old month means NO rendered cell matches and the grid has zero tab
+   * stops — a keyboard guest who uses these buttons cannot reach any date at
+   * all, with nothing on screen explaining why.
+   *
+   * Deliberately does not arm `pendingFocus`: the guest clicked a button, so
+   * focus stays on that button rather than jumping into the grid.
+   */
+  function goToMonth(nextCursor: string) {
+    setCursor(nextCursor);
+    const day = Math.min(Number(focusDate.slice(8, 10)), daysInMonth(nextCursor));
+    setFocusDate(`${nextCursor.slice(0, 7)}-${String(day).padStart(2, '0')}`);
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>, iso: string) {
@@ -2453,8 +3346,8 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
       case 'ArrowUp': e.preventDefault(); move(iso, -7); break;
       case 'Home': e.preventDefault(); move(iso, -mondayIndex(iso)); break;
       case 'End': e.preventDefault(); move(iso, 6 - mondayIndex(iso)); break;
-      case 'PageDown': e.preventDefault(); move(iso, daysInMonth(iso)); break;
-      case 'PageUp': e.preventDefault(); move(iso, -daysInMonth(addDays(startOfMonth(iso), -1))); break;
+      case 'PageDown': e.preventDefault(); moveTo(iso, addMonths(iso, 1)); break;
+      case 'PageUp': e.preventDefault(); moveTo(iso, addMonths(iso, -1)); break;
       case 'Enter':
       case ' ':
         e.preventDefault();
@@ -2479,58 +3372,80 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
           className="calendar-nav"
           aria-label="Previous month"
           disabled={prevDisabled}
-          onClick={() => setCursor(startOfMonth(addDays(cursor, -1)))}
+          onClick={() => goToMonth(startOfMonth(addDays(cursor, -1)))}
         >
           &larr;
         </button>
-        <span className="calendar-caption">{monthLabel(cursor)}</span>
+        <span className="calendar-caption" id={captionId}>
+          {monthLabel(cursor)}
+        </span>
         <button
           type="button"
           className="calendar-nav"
           aria-label="Next month"
-          onClick={() => setCursor(startOfMonth(addDays(cursor, daysInMonth(cursor))))}
+          onClick={() => goToMonth(startOfMonth(addDays(cursor, daysInMonth(cursor))))}
         >
           &rarr;
         </button>
       </div>
 
-      <div className="calendar-grid" role="grid" aria-label="Choose your dates" ref={gridRef}>
-        {DOW.map((d) => (
-          <div key={d} className="calendar-dow" role="columnheader" aria-label={d}>
-            {d.slice(0, 1)}
+      <div
+        className="calendar-grid"
+        role="grid"
+        aria-label="Choose your dates"
+        aria-describedby={captionId}
+        ref={gridRef}
+      >
+        <div className="calendar-row" role="row">
+          {DOW.map((d) => (
+            <div key={d} className="calendar-dow" role="columnheader" aria-label={d}>
+              {d.slice(0, 1)}
+            </div>
+          ))}
+        </div>
+
+        {weeks.map((week, w) => (
+          <div className="calendar-row" role="row" key={`week-${w}`}>
+            {week.map((iso, i) => {
+              if (iso === null) {
+                return (
+                  <div
+                    key={`blank-${w}-${i}`}
+                    className="calendar-empty"
+                    role="presentation"
+                  />
+                );
+              }
+
+              const selectable = isSelectable(iso);
+              const selected = isInRange(iso);
+              const edge = iso === checkIn || iso === checkOut;
+              const dayNum = Number(iso.slice(8, 10));
+              const isToday = iso === todayIso;
+              const label = `${dayNum} ${monthLabel(iso)}${selectable ? '' : ' — unavailable'}`;
+
+              return (
+                <div
+                  key={iso}
+                  role="gridcell"
+                  data-date={iso}
+                  aria-label={label}
+                  aria-selected={selected}
+                  aria-disabled={!selectable}
+                  aria-current={isToday ? 'date' : undefined}
+                  tabIndex={iso === focusDate ? 0 : -1}
+                  className={`calendar-day${edge ? ' is-edge' : ''}${isToday ? ' is-today' : ''}`}
+                  style={{ borderRadius: 3 }}
+                  onClick={() => selectable && onPickDate(iso)}
+                  onFocus={() => setFocusDate(iso)}
+                  onKeyDown={(e) => onKeyDown(e, iso)}
+                >
+                  {dayNum}
+                </div>
+              );
+            })}
           </div>
         ))}
-
-        {Array.from({ length: leadingBlanks }, (_, i) => (
-          <div key={`blank-${i}`} className="calendar-empty" role="presentation" />
-        ))}
-
-        {days.map((iso) => {
-          const selectable = isSelectable(iso);
-          const selected = isInRange(iso);
-          const edge = iso === checkIn || iso === checkOut;
-          const dayNum = Number(iso.slice(8, 10));
-          const label = `${dayNum} ${monthLabel(iso)}${selectable ? '' : ' — unavailable'}`;
-
-          return (
-            <div
-              key={iso}
-              role="gridcell"
-              data-date={iso}
-              aria-label={label}
-              aria-selected={selected}
-              aria-disabled={!selectable}
-              tabIndex={iso === focusDate ? 0 : -1}
-              className={`calendar-day${edge ? ' is-edge' : ''}`}
-              style={{ borderRadius: 3 }}
-              onClick={() => selectable && onPickDate(iso)}
-              onFocus={() => setFocusDate(iso)}
-              onKeyDown={(e) => onKeyDown(e, iso)}
-            >
-              {dayNum}
-            </div>
-          );
-        })}
       </div>
 
       <p role="status" aria-live="polite" className="visually-hidden">
@@ -2552,7 +3467,7 @@ function monthDay(iso: string): string {
 - [ ] **Step 5: Run tests**
 
 Run: `npm test -- Calendar`
-Expected: PASS — 12 tests. If the roving-tabindex focus assertions fail, the cause is almost always `requestAnimationFrame` not flushing in jsdom; wrap the focus call in `queueMicrotask` instead.
+Expected: PASS — 12 tests. The focus call is a layout effect for the reason given in the code comment; do not move it to `requestAnimationFrame` or `queueMicrotask` — both were tried and both fail the roving-tabindex assertions, because neither runs inside `fireEvent`'s synchronous `act()` scope.
 
 - [ ] **Step 6: Commit**
 
@@ -2771,8 +3686,11 @@ import { motion } from 'motion/react';
 import type { Suite } from '../types';
 import { formatUSD } from '../lib/pricing';
 import { SmartImage } from './SmartImage';
-import { riseIn } from '../motion/tokens';
 import './SuiteCard.css';
+
+// Note: SuiteCard carries NO `variants` of its own. Its parent <motion.li> in
+// Landing is the stagger child and owns the riseIn variant. Putting riseIn here
+// too would animate the same properties twice on nested elements.
 
 type Props = {
   suite: Suite;
@@ -2784,7 +3702,6 @@ export function SuiteCard({ suite, unavailable, onSelect }: Props) {
   return (
     <motion.button
       type="button"
-      variants={riseIn}
       layout
       disabled={unavailable}
       onClick={() => !unavailable && onSelect(suite.id)}
@@ -2850,9 +3767,35 @@ Filtering behaviour, exactly as specified: suites whose `maxGuests` is below the
 ```tsx
 // src/views/__tests__/Landing.test.tsx
 import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Landing } from '../Landing';
 import { BookingProvider } from '../../state/BookingProvider';
+
+/**
+ * jsdom implements neither observer API, and both are real dependencies of this
+ * view rather than test conveniences: Motion's `whileInView` constructs an
+ * IntersectionObserver, and Lenis constructs a ResizeObserver (test matchMedia
+ * reports matches:false, so useLenis builds a real instance).
+ *
+ * Both are deliberately inert. Firing the intersection callback from `observe`
+ * would push a Motion state update outside act(), and an act warning is worse
+ * noise than an unexercised stagger — these assertions are about what is in the
+ * document, not about opacity.
+ *
+ * Scoped to this file, not the shared setup: vitest gives each test file its own
+ * jsdom, so nothing leaks. Note `restoreMocks` does not clean these up — they
+ * are direct global assignment, not `vi.spyOn`.
+ */
+class InertObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+globalThis.IntersectionObserver = InertObserver as unknown as typeof IntersectionObserver;
+globalThis.ResizeObserver = InertObserver as unknown as typeof ResizeObserver;
 
 function renderLanding() {
   render(
@@ -2870,12 +3813,19 @@ describe('Landing', () => {
     expect(screen.getByText('Celeste Penthouse')).toBeInTheDocument();
   });
 
-  it('removes suites that cannot hold the party size', () => {
+  it('removes suites that cannot hold the party size', async () => {
     renderLanding();
     // Raise to 3 guests: the two-guest suites must disappear.
     fireEvent.click(screen.getByRole('button', { name: /add a guest/i }));
     fireEvent.click(screen.getByRole('button', { name: /add a guest/i }));
-    expect(screen.queryByText('Aurelia Suite')).not.toBeInTheDocument();
+    // Awaited, not synchronous. Removal is specified to animate out, so
+    // AnimatePresence holds the exiting card until its exit finishes (~120ms
+    // measured). Asserting absence on the same tick could only pass if the
+    // specified exit animation did not exist. Awaiting is also the stronger
+    // assertion: it proves the node really unmounts.
+    await waitFor(() =>
+      expect(screen.queryByText('Aurelia Suite')).not.toBeInTheDocument()
+    );
     expect(screen.getByText('Garden Pavilion')).toBeInTheDocument();
   });
 
@@ -3010,7 +3960,7 @@ export function useLenis(enabled: boolean): void {
 - [ ] **Step 5: Implement `src/views/Landing.tsx`**
 
 ```tsx
-import { useMemo, useRef } from 'react';
+import { Fragment, useMemo, useRef } from 'react';
 import { motion, useScroll, useTransform, AnimatePresence } from 'motion/react';
 import { SUITES } from '../data/suites';
 import { useBooking } from '../state/BookingProvider';
@@ -3072,20 +4022,29 @@ export function Landing() {
 
           <h1 className="hero-title">
             {TITLE_LINES.map((line, i) => (
-              <span className="hero-line" key={line}>
-                <motion.span
-                  style={{ display: 'block' }}
-                  initial={{ y: reduced ? 0 : '110%' }}
-                  animate={{ y: 0 }}
-                  transition={{
-                    duration: reduced ? 0 : DURATION.hero,
-                    delay: reduced ? 0 : i * 0.08,
-                    ease: [0.16, 1, 0.3, 1],
-                  }}
-                >
-                  {line}
-                </motion.span>
-              </span>
+              <Fragment key={line}>
+                {/* A word separator in the TEXT layer, which the visual line
+                    split does not provide. Each line is its own block, so
+                    without this the h1's textContent — and therefore its
+                    accessible name, in-page search and copy-paste — reads
+                    "MeridianReserve". Whitespace between block boxes renders
+                    nothing, so the two-line composition is unchanged. */}
+                {i > 0 && ' '}
+                <span className="hero-line">
+                  <motion.span
+                    style={{ display: 'block' }}
+                    initial={{ y: reduced ? 0 : '110%' }}
+                    animate={{ y: 0 }}
+                    transition={{
+                      duration: reduced ? 0 : DURATION.hero,
+                      delay: reduced ? 0 : i * 0.08,
+                      ease: [0.16, 1, 0.3, 1],
+                    }}
+                  >
+                    {line}
+                  </motion.span>
+                </span>
+              </Fragment>
             ))}
           </h1>
         </div>
@@ -3119,13 +4078,18 @@ export function Landing() {
         <motion.ul
           className="suite-grid"
           variants={staggerParent(reduced)}
-          initial="initial"
-          whileInView="animate"
+          initial="hidden"
+          whileInView="visible"
           viewport={{ once: true, amount: 0.15 }}
         >
           <AnimatePresence mode="popLayout">
             {visible.map((suite) => (
-              <motion.li key={suite.id} variants={riseIn} layout exit={{ opacity: 0, scale: 0.97 }}>
+              <motion.li
+                key={suite.id}
+                variants={riseIn(reduced)}
+                layout
+                exit={{ opacity: 0, scale: 0.97 }}
+              >
                 <SuiteCard
                   suite={suite}
                   unavailable={range ? !isSuiteAvailable(suite.id, range) : false}
@@ -3384,23 +4348,23 @@ export function SuiteDetail({ suiteId }: { suiteId: string }) {
       <motion.div
         className="detail-body"
         variants={staggerParent(reduced, 0.07)}
-        initial="initial"
-        animate="animate"
+        initial="hidden"
+        animate="visible"
         transition={{ delay: reduced ? 0 : 0.25 }}
       >
         <div>
-          <motion.div variants={riseIn}>
+          <motion.div variants={riseIn(reduced)}>
             <p className="label">{formatUSD(suite.rate)} per night</p>
             <h1 className="detail-title">{suite.name}</h1>
             <p className="detail-desc">{suite.description}</p>
           </motion.div>
 
-          <motion.button variants={riseIn} type="button" className="cta" onClick={goReserve}>
+          <motion.button variants={riseIn(reduced)} type="button" className="cta" onClick={goReserve}>
             Reserve this suite
           </motion.button>
         </div>
 
-        <motion.ul className="spec-list" variants={riseIn}>
+        <motion.ul className="spec-list" variants={riseIn(reduced)}>
           <li>
             <span>Size</span>
             <span>{suite.size} m&sup2;</span>
@@ -4119,7 +5083,7 @@ Expected: FAIL — App still renders the placeholder heading.
 
 ```tsx
 import { useEffect, useRef } from 'react';
-import { AnimatePresence, LayoutGroup } from 'motion/react';
+import { AnimatePresence, LayoutGroup, MotionConfig } from 'motion/react';
 import { BookingProvider, useBooking } from './state/BookingProvider';
 import { onPopState, replaceView, parsePath } from './state/history';
 import { Landing } from './views/Landing';
@@ -4179,9 +5143,14 @@ function Router() {
 
 export default function App() {
   return (
-    <BookingProvider>
-      <Router />
-    </BookingProvider>
+    // reducedMotion="user" is a second line of defence: it suppresses
+    // transform animations app-wide when the OS preference is set, catching any
+    // component that forgot to branch on useReducedMotion itself.
+    <MotionConfig reducedMotion="user">
+      <BookingProvider>
+        <Router />
+      </BookingProvider>
+    </MotionConfig>
   );
 }
 ```
