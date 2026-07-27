@@ -2987,6 +2987,31 @@ describe('Calendar', () => {
     expect(screen.getAllByRole('columnheader')).toHaveLength(7);
   });
 
+  it('moves focus back a day with the left arrow', () => {
+    setup();
+    const day18 = screen.getByRole('gridcell', { name: /^18 / });
+    focus(day18);
+    fireEvent.keyDown(day18, { key: 'ArrowLeft' });
+    expect(screen.getByRole('gridcell', { name: /^17 / })).toHaveFocus();
+  });
+
+  it('gives each calendar instance its own caption id', () => {
+    // A hardcoded id would collide if two calendars were ever mounted together,
+    // leaving aria-describedby ambiguous.
+    render(
+      <>
+        <Calendar suiteId="aurelia" checkIn={null} checkOut={null} onPickDate={() => {}} today={TODAY} />
+        <Calendar suiteId="meridian" checkIn={null} checkOut={null} onPickDate={() => {}} today={TODAY} />
+      </>
+    );
+    const grids = screen.getAllByRole('grid');
+    const ids = grids.map((g) => g.getAttribute('aria-describedby'));
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ids) {
+      expect(document.querySelectorAll(`#${CSS.escape(id!)}`)).toHaveLength(1);
+    }
+  });
+
   it('moves focus back a week with the up arrow', () => {
     setup();
     const day24 = screen.getByRole('gridcell', { name: /^24 / });
@@ -3136,8 +3161,11 @@ Expected: FAIL — cannot resolve `../Calendar`.
   text-decoration: line-through;
 }
 
+/* 0.7 alpha blends to rgb(147,120,35) = 4.25:1 against --panel, clearing the
+   3:1 threshold for a non-text indicator. At 0.45 it measured 2.49:1, and this
+   ring is the only VISUAL cue for today (aria-current covers assistive tech). */
 .calendar-day.is-today {
-  box-shadow: inset 0 0 0 1px rgba(201, 162, 39, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(201, 162, 39, 0.7);
 }
 
 .calendar-day[aria-selected='true'] {
@@ -3157,7 +3185,7 @@ Expected: FAIL — cannot resolve `../Calendar`.
 - [ ] **Step 4: Implement `src/components/Calendar.tsx`**
 
 ```tsx
-import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 // Note: toISO is deliberately NOT imported — Calendar never calls it, and
 // `noUnusedLocals` turns an unused import into a build failure (TS6133).
 // Same for useReducedMotion: the Calendar has no animation, so there is nothing
@@ -3216,6 +3244,9 @@ function addMonths(iso: string, n: number): string {
 
 export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Props) {
   const todayIso = today ?? todayISO();
+  // A hardcoded id would duplicate if two Calendars ever mount together, which
+  // makes aria-describedby ambiguous. useId is per-instance.
+  const captionId = useId();
   const [cursor, setCursor] = useState(() => startOfMonth(checkIn ?? todayIso));
   const [focusDate, setFocusDate] = useState<string>(checkIn ?? todayIso);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -3345,7 +3376,7 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
         >
           &larr;
         </button>
-        <span className="calendar-caption" id="calendar-caption">
+        <span className="calendar-caption" id={captionId}>
           {monthLabel(cursor)}
         </span>
         <button
@@ -3362,7 +3393,7 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
         className="calendar-grid"
         role="grid"
         aria-label="Choose your dates"
-        aria-describedby="calendar-caption"
+        aria-describedby={captionId}
         ref={gridRef}
       >
         <div className="calendar-row" role="row">
