@@ -3767,9 +3767,35 @@ Filtering behaviour, exactly as specified: suites whose `maxGuests` is below the
 ```tsx
 // src/views/__tests__/Landing.test.tsx
 import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Landing } from '../Landing';
 import { BookingProvider } from '../../state/BookingProvider';
+
+/**
+ * jsdom implements neither observer API, and both are real dependencies of this
+ * view rather than test conveniences: Motion's `whileInView` constructs an
+ * IntersectionObserver, and Lenis constructs a ResizeObserver (test matchMedia
+ * reports matches:false, so useLenis builds a real instance).
+ *
+ * Both are deliberately inert. Firing the intersection callback from `observe`
+ * would push a Motion state update outside act(), and an act warning is worse
+ * noise than an unexercised stagger — these assertions are about what is in the
+ * document, not about opacity.
+ *
+ * Scoped to this file, not the shared setup: vitest gives each test file its own
+ * jsdom, so nothing leaks. Note `restoreMocks` does not clean these up — they
+ * are direct global assignment, not `vi.spyOn`.
+ */
+class InertObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+globalThis.IntersectionObserver = InertObserver as unknown as typeof IntersectionObserver;
+globalThis.ResizeObserver = InertObserver as unknown as typeof ResizeObserver;
 
 function renderLanding() {
   render(
@@ -3787,12 +3813,19 @@ describe('Landing', () => {
     expect(screen.getByText('Celeste Penthouse')).toBeInTheDocument();
   });
 
-  it('removes suites that cannot hold the party size', () => {
+  it('removes suites that cannot hold the party size', async () => {
     renderLanding();
     // Raise to 3 guests: the two-guest suites must disappear.
     fireEvent.click(screen.getByRole('button', { name: /add a guest/i }));
     fireEvent.click(screen.getByRole('button', { name: /add a guest/i }));
-    expect(screen.queryByText('Aurelia Suite')).not.toBeInTheDocument();
+    // Awaited, not synchronous. Removal is specified to animate out, so
+    // AnimatePresence holds the exiting card until its exit finishes (~120ms
+    // measured). Asserting absence on the same tick could only pass if the
+    // specified exit animation did not exist. Awaiting is also the stronger
+    // assertion: it proves the node really unmounts.
+    await waitFor(() =>
+      expect(screen.queryByText('Aurelia Suite')).not.toBeInTheDocument()
+    );
     expect(screen.getByText('Garden Pavilion')).toBeInTheDocument();
   });
 
@@ -3927,7 +3960,7 @@ export function useLenis(enabled: boolean): void {
 - [ ] **Step 5: Implement `src/views/Landing.tsx`**
 
 ```tsx
-import { useMemo, useRef } from 'react';
+import { Fragment, useMemo, useRef } from 'react';
 import { motion, useScroll, useTransform, AnimatePresence } from 'motion/react';
 import { SUITES } from '../data/suites';
 import { useBooking } from '../state/BookingProvider';
@@ -3989,20 +4022,29 @@ export function Landing() {
 
           <h1 className="hero-title">
             {TITLE_LINES.map((line, i) => (
-              <span className="hero-line" key={line}>
-                <motion.span
-                  style={{ display: 'block' }}
-                  initial={{ y: reduced ? 0 : '110%' }}
-                  animate={{ y: 0 }}
-                  transition={{
-                    duration: reduced ? 0 : DURATION.hero,
-                    delay: reduced ? 0 : i * 0.08,
-                    ease: [0.16, 1, 0.3, 1],
-                  }}
-                >
-                  {line}
-                </motion.span>
-              </span>
+              <Fragment key={line}>
+                {/* A word separator in the TEXT layer, which the visual line
+                    split does not provide. Each line is its own block, so
+                    without this the h1's textContent — and therefore its
+                    accessible name, in-page search and copy-paste — reads
+                    "MeridianReserve". Whitespace between block boxes renders
+                    nothing, so the two-line composition is unchanged. */}
+                {i > 0 && ' '}
+                <span className="hero-line">
+                  <motion.span
+                    style={{ display: 'block' }}
+                    initial={{ y: reduced ? 0 : '110%' }}
+                    animate={{ y: 0 }}
+                    transition={{
+                      duration: reduced ? 0 : DURATION.hero,
+                      delay: reduced ? 0 : i * 0.08,
+                      ease: [0.16, 1, 0.3, 1],
+                    }}
+                  >
+                    {line}
+                  </motion.span>
+                </span>
+              </Fragment>
             ))}
           </h1>
         </div>
