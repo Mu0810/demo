@@ -138,6 +138,31 @@ describe('Calendar', () => {
     expect(screen.getAllByRole('columnheader')).toHaveLength(7);
   });
 
+  it('moves focus back a day with the left arrow', () => {
+    setup();
+    const day18 = screen.getByRole('gridcell', { name: /^18 / });
+    focus(day18);
+    fireEvent.keyDown(day18, { key: 'ArrowLeft' });
+    expect(screen.getByRole('gridcell', { name: /^17 / })).toHaveFocus();
+  });
+
+  it('gives each calendar instance its own caption id', () => {
+    // A hardcoded id would collide if two calendars were ever mounted together,
+    // leaving aria-describedby ambiguous.
+    render(
+      <>
+        <Calendar suiteId="aurelia" checkIn={null} checkOut={null} onPickDate={() => {}} today={TODAY} />
+        <Calendar suiteId="meridian" checkIn={null} checkOut={null} onPickDate={() => {}} today={TODAY} />
+      </>
+    );
+    const grids = screen.getAllByRole('grid');
+    const ids = grids.map((g) => g.getAttribute('aria-describedby'));
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ids) {
+      expect(document.querySelectorAll(`#${CSS.escape(id!)}`)).toHaveLength(1);
+    }
+  });
+
   it('moves focus back a week with the up arrow', () => {
     setup();
     const day24 = screen.getByRole('gridcell', { name: /^24 / });

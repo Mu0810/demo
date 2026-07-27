@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 // Note: toISO is deliberately NOT imported — Calendar never calls it, and
 // `noUnusedLocals` turns an unused import into a build failure (TS6133).
 // Same for useReducedMotion: the Calendar has no animation, so there is nothing
@@ -57,6 +57,9 @@ function addMonths(iso: string, n: number): string {
 
 export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Props) {
   const todayIso = today ?? todayISO();
+  // A hardcoded id would duplicate if two Calendars ever mount together, which
+  // makes aria-describedby ambiguous. useId is per-instance.
+  const captionId = useId();
   const [cursor, setCursor] = useState(() => startOfMonth(checkIn ?? todayIso));
   const [focusDate, setFocusDate] = useState<string>(checkIn ?? todayIso);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -186,7 +189,7 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
         >
           &larr;
         </button>
-        <span className="calendar-caption" id="calendar-caption">
+        <span className="calendar-caption" id={captionId}>
           {monthLabel(cursor)}
         </span>
         <button
@@ -203,7 +206,7 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
         className="calendar-grid"
         role="grid"
         aria-label="Choose your dates"
-        aria-describedby="calendar-caption"
+        aria-describedby={captionId}
         ref={gridRef}
       >
         <div className="calendar-row" role="row">
