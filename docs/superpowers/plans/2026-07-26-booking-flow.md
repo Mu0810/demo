@@ -2691,6 +2691,52 @@ describe('SmartImage', () => {
     expect(img).toHaveAttribute('loading', 'lazy');
     expect(img).toHaveAttribute('decoding', 'async');
   });
+
+  it('loads eagerly when asked, for above-the-fold photography', () => {
+    render(<SmartImage src="https://images.unsplash.com/photo-x" alt="A suite" eager />);
+    expect(screen.getByAltText('A suite')).toHaveAttribute('loading', 'eager');
+  });
+
+  it('recovers when the src changes after a failure', () => {
+    // A bare `failed` boolean would leave the fallback in place forever, so a
+    // gallery reusing one instance loses the slot to a single transient error.
+    const { rerender } = render(
+      <SmartImage src="https://images.unsplash.com/broken" alt="A suite" />
+    );
+    fireEvent.error(screen.getByAltText('A suite'));
+    expect(screen.queryByAltText('A suite')).not.toBeInTheDocument();
+
+    rerender(<SmartImage src="https://images.unsplash.com/working" alt="A suite" />);
+    expect(screen.getByAltText('A suite')).toBeInTheDocument();
+  });
+
+  it('forwards className and style to both the image and the fallback', () => {
+    const { rerender } = render(
+      <SmartImage
+        src="https://images.unsplash.com/photo-x"
+        alt="A suite"
+        className="hero"
+        style={{ opacity: 0.5 }}
+      />
+    );
+    expect(screen.getByAltText('A suite')).toHaveClass('smart-image', 'hero');
+
+    fireEvent.error(screen.getByAltText('A suite'));
+    const fallback = screen.getByRole('img', { name: 'A suite' });
+    expect(fallback).toHaveClass('smart-image-fallback', 'hero');
+    expect(fallback).toHaveStyle({ opacity: '0.5' });
+
+    rerender(
+      <SmartImage src="https://images.unsplash.com/photo-x" alt="A suite" />
+    );
+  });
+
+  it('hides a decorative image from assistive tech when it fails', () => {
+    // An img role with an empty accessible name is worse than <img alt="">.
+    render(<SmartImage src="https://images.unsplash.com/broken" alt="" />);
+    fireEvent.error(screen.getByRole('presentation', { hidden: true }));
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  });
 });
 ```
 
@@ -2734,16 +2780,23 @@ type Props = {
 };
 
 export function SmartImage({ src, alt, className, style, sizes, eager = false }: Props) {
-  const [failed, setFailed] = useState(false);
+  // Keyed to the src, not a bare boolean. A plain `failed` flag never resets, so
+  // one transient error would leave the fallback in place forever even after the
+  // caller swaps in a working URL — which is exactly what a gallery does.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const failed = failedSrc === src;
+
+  const cls = (base: string) => (className ? `${base} ${className}` : base);
 
   if (failed) {
     // role="img" with aria-label keeps the alternative text available to
-    // assistive tech even though there is no longer an <img> element.
+    // assistive tech even though there is no longer an <img> element. A
+    // decorative image (alt="") must instead leave the tree entirely: an img
+    // role with an empty name is worse than the <img alt=""> it replaced.
     return (
       <div
-        role="img"
-        aria-label={alt}
-        className={`smart-image-fallback ${className ?? ''}`}
+        {...(alt ? { role: 'img', 'aria-label': alt } : { 'aria-hidden': true })}
+        className={cls('smart-image-fallback')}
         style={style}
       />
     );
@@ -2754,11 +2807,11 @@ export function SmartImage({ src, alt, className, style, sizes, eager = false }:
       src={src}
       alt={alt}
       sizes={sizes}
-      className={`smart-image ${className ?? ''}`}
+      className={cls('smart-image')}
       style={style}
       loading={eager ? 'eager' : 'lazy'}
       decoding="async"
-      onError={() => setFailed(true)}
+      onError={() => setFailedSrc(src)}
     />
   );
 }
@@ -2907,6 +2960,90 @@ describe('Calendar', () => {
     const sunday = screen.getByRole('gridcell', { name: /^16 / });
     expect(sunday.getAttribute('aria-label')).toMatch(/unavailable/i);
   });
+
+  it('keeps exactly one tab stop after navigating months by button', () => {
+    // The roving tabindex is `iso === focusDate`. If month navigation moves the
+    // cursor but leaves focusDate behind, NO rendered cell matches and the grid
+    // has zero tab stops — a keyboard guest cannot reach any date at all.
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: /next month/i }));
+
+    const tabbable = screen
+      .getAllByRole('gridcell')
+      .filter((c) => c.getAttribute('tabindex') === '0');
+    expect(tabbable).toHaveLength(1);
+  });
+
+  it('exposes rows, as role=grid requires', () => {
+    // grid -> row -> gridcell. Without rows, columnheader has no valid context.
+    setup();
+    const rows = screen.getAllByRole('row');
+    expect(rows.length).toBeGreaterThan(1);
+    expect(screen.getAllByRole('columnheader')).toHaveLength(7);
+  });
+
+  it('moves focus back a week with the up arrow', () => {
+    setup();
+    const day24 = screen.getByRole('gridcell', { name: /^24 / });
+    day24.focus();
+    fireEvent.keyDown(day24, { key: 'ArrowUp' });
+    expect(screen.getByRole('gridcell', { name: /^17 / })).toHaveFocus();
+  });
+
+  it('moves to the week bounds with Home and End', () => {
+    setup();
+    // 2026-08-19 is a Wednesday; the Monday-first week runs 17..23.
+    const day19 = screen.getByRole('gridcell', { name: /^19 / });
+    day19.focus();
+    fireEvent.keyDown(day19, { key: 'Home' });
+    expect(screen.getByRole('gridcell', { name: /^17 / })).toHaveFocus();
+
+    const day17 = screen.getByRole('gridcell', { name: /^17 / });
+    fireEvent.keyDown(day17, { key: 'End' });
+    expect(screen.getByRole('gridcell', { name: /^23 / })).toHaveFocus();
+  });
+
+  it('PageDown moves a whole month and clamps to the month length', () => {
+    // Day arithmetic would add 31 and land on 1 October, skipping September.
+    setup({ checkIn: '2026-08-31' });
+    const day31 = screen.getByRole('gridcell', { name: /^31 August/ });
+    day31.focus();
+    fireEvent.keyDown(day31, { key: 'PageDown' });
+
+    expect(screen.getByText(/September 2026/i)).toBeInTheDocument();
+    expect(screen.getByRole('gridcell', { name: /^30 September/ })).toHaveFocus();
+  });
+
+  it('PageUp moves a whole month even from a long month', () => {
+    // Subtracting February's 28 days from 30 March lands on 2 March — still in
+    // March, so the key looks broken.
+    setup({ checkIn: '2027-03-30' });
+    const day30 = screen.getByRole('gridcell', { name: /^30 March/ });
+    day30.focus();
+    fireEvent.keyDown(day30, { key: 'PageUp' });
+
+    expect(screen.getByText(/February 2027/i)).toBeInTheDocument();
+    expect(screen.getByRole('gridcell', { name: /^28 February/ })).toHaveFocus();
+  });
+
+  it('refuses to select an unavailable date by keyboard as well as by click', () => {
+    // The click path was covered; Enter and Space were not.
+    const { onPickDate } = setup({ suiteId: 'celeste' });
+    const sunday = screen.getByRole('gridcell', { name: /^16 / });
+    sunday.focus();
+
+    fireEvent.keyDown(sunday, { key: 'Enter' });
+    fireEvent.keyDown(sunday, { key: ' ' });
+    expect(onPickDate).not.toHaveBeenCalled();
+  });
+
+  it('marks today with aria-current', () => {
+    setup();
+    expect(screen.getByRole('gridcell', { name: /^10 August/ })).toHaveAttribute(
+      'aria-current',
+      'date'
+    );
+  });
 });
 ```
 
@@ -2949,7 +3086,15 @@ Expected: FAIL — cannot resolve `../Calendar`.
   cursor: not-allowed;
 }
 
+/* The grid is a stack of rows; each row lays out its own 7 columns, because
+   role="grid" requires grid -> row -> gridcell. */
 .calendar-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.calendar-row {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 2px;
@@ -2976,10 +3121,18 @@ Expected: FAIL — cannot resolve `../Calendar`.
   cursor: pointer;
 }
 
+/* --caption is 6.22:1 on --panel, so unbookable dates still clear WCAG AA.
+   The previous #55524d measured 2.32:1, and these cells stay in the
+   accessibility tree and remain arrow-reachable, so the inactive-control
+   exemption does not apply to them. */
 .calendar-day[aria-disabled='true'] {
-  color: #55524d;
+  color: var(--caption);
   cursor: not-allowed;
   text-decoration: line-through;
+}
+
+.calendar-day.is-today {
+  box-shadow: inset 0 0 0 1px rgba(201, 162, 39, 0.45);
 }
 
 .calendar-day[aria-selected='true'] {
@@ -3041,6 +3194,21 @@ function monthLabel(iso: string): string {
   });
 }
 
+/**
+ * Shift by whole months, clamping the day to the target month's length.
+ *
+ * PageUp/PageDown must NOT be day arithmetic. Adding `daysInMonth(iso)` skips
+ * September entirely from 31 August, skips February from 31 January, and from
+ * 30 March lands back in March — so the key appears dead for three days a year.
+ */
+function addMonths(iso: string, n: number): string {
+  const d = fromISO(iso);
+  const first = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1, 12));
+  const ym = `${first.getUTCFullYear()}-${String(first.getUTCMonth() + 1).padStart(2, '0')}`;
+  const day = Math.min(d.getUTCDate(), daysInMonth(`${ym}-01`));
+  return `${ym}-${String(day).padStart(2, '0')}`;
+}
+
 export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Props) {
   const todayIso = today ?? todayISO();
   const [cursor, setCursor] = useState(() => startOfMonth(checkIn ?? todayIso));
@@ -3073,7 +3241,22 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
     return Array.from({ length: total }, (_, i) => addDays(cursor, i));
   }, [cursor]);
 
-  const leadingBlanks = mondayIndex(cursor);
+  /**
+   * Weeks of 7, padded at both ends with nulls.
+   *
+   * A `role="grid"` must own rows: grid -> row -> gridcell. With cells as direct
+   * children there are no rows at all, and `columnheader` has no valid context.
+   */
+  const weeks = useMemo(() => {
+    const cells: (string | null)[] = [
+      ...Array.from({ length: mondayIndex(cursor) }, () => null),
+      ...days,
+    ];
+    while (cells.length % 7 !== 0) cells.push(null);
+    const out: (string | null)[][] = [];
+    for (let i = 0; i < cells.length; i += 7) out.push(cells.slice(i, i + 7));
+    return out;
+  }, [cursor, days]);
 
   function isInRange(iso: string): boolean {
     if (!checkIn) return false;
@@ -3086,9 +3269,8 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
     return isNightAvailable(suiteId, iso);
   }
 
-  function move(from: string, delta: number) {
-    const next = addDays(from, delta);
-    // A zero-delta move (Home on a Monday, End on a Sunday) would leave the
+  function moveTo(from: string, next: string) {
+    // A no-op move (Home on a Monday, End on a Sunday) would leave the
     // pending-focus flag armed with no commit to consume it, so a later
     // unrelated re-render would steal focus.
     if (next === from) return;
@@ -3099,6 +3281,27 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
     }
   }
 
+  function move(from: string, delta: number) {
+    moveTo(from, addDays(from, delta));
+  }
+
+  /**
+   * Month navigation by button must also move `focusDate` into the new month.
+   *
+   * The roving tabindex is `iso === focusDate`, so leaving focusDate behind in
+   * the old month means NO rendered cell matches and the grid has zero tab
+   * stops — a keyboard guest who uses these buttons cannot reach any date at
+   * all, with nothing on screen explaining why.
+   *
+   * Deliberately does not arm `pendingFocus`: the guest clicked a button, so
+   * focus stays on that button rather than jumping into the grid.
+   */
+  function goToMonth(nextCursor: string) {
+    setCursor(nextCursor);
+    const day = Math.min(Number(focusDate.slice(8, 10)), daysInMonth(nextCursor));
+    setFocusDate(`${nextCursor.slice(0, 7)}-${String(day).padStart(2, '0')}`);
+  }
+
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>, iso: string) {
     switch (e.key) {
       case 'ArrowRight': e.preventDefault(); move(iso, 1); break;
@@ -3107,8 +3310,8 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
       case 'ArrowUp': e.preventDefault(); move(iso, -7); break;
       case 'Home': e.preventDefault(); move(iso, -mondayIndex(iso)); break;
       case 'End': e.preventDefault(); move(iso, 6 - mondayIndex(iso)); break;
-      case 'PageDown': e.preventDefault(); move(iso, daysInMonth(iso)); break;
-      case 'PageUp': e.preventDefault(); move(iso, -daysInMonth(addDays(startOfMonth(iso), -1))); break;
+      case 'PageDown': e.preventDefault(); moveTo(iso, addMonths(iso, 1)); break;
+      case 'PageUp': e.preventDefault(); moveTo(iso, addMonths(iso, -1)); break;
       case 'Enter':
       case ' ':
         e.preventDefault();
@@ -3133,58 +3336,80 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
           className="calendar-nav"
           aria-label="Previous month"
           disabled={prevDisabled}
-          onClick={() => setCursor(startOfMonth(addDays(cursor, -1)))}
+          onClick={() => goToMonth(startOfMonth(addDays(cursor, -1)))}
         >
           &larr;
         </button>
-        <span className="calendar-caption">{monthLabel(cursor)}</span>
+        <span className="calendar-caption" id="calendar-caption">
+          {monthLabel(cursor)}
+        </span>
         <button
           type="button"
           className="calendar-nav"
           aria-label="Next month"
-          onClick={() => setCursor(startOfMonth(addDays(cursor, daysInMonth(cursor))))}
+          onClick={() => goToMonth(startOfMonth(addDays(cursor, daysInMonth(cursor))))}
         >
           &rarr;
         </button>
       </div>
 
-      <div className="calendar-grid" role="grid" aria-label="Choose your dates" ref={gridRef}>
-        {DOW.map((d) => (
-          <div key={d} className="calendar-dow" role="columnheader" aria-label={d}>
-            {d.slice(0, 1)}
+      <div
+        className="calendar-grid"
+        role="grid"
+        aria-label="Choose your dates"
+        aria-describedby="calendar-caption"
+        ref={gridRef}
+      >
+        <div className="calendar-row" role="row">
+          {DOW.map((d) => (
+            <div key={d} className="calendar-dow" role="columnheader" aria-label={d}>
+              {d.slice(0, 1)}
+            </div>
+          ))}
+        </div>
+
+        {weeks.map((week, w) => (
+          <div className="calendar-row" role="row" key={`week-${w}`}>
+            {week.map((iso, i) => {
+              if (iso === null) {
+                return (
+                  <div
+                    key={`blank-${w}-${i}`}
+                    className="calendar-empty"
+                    role="presentation"
+                  />
+                );
+              }
+
+              const selectable = isSelectable(iso);
+              const selected = isInRange(iso);
+              const edge = iso === checkIn || iso === checkOut;
+              const dayNum = Number(iso.slice(8, 10));
+              const isToday = iso === todayIso;
+              const label = `${dayNum} ${monthLabel(iso)}${selectable ? '' : ' — unavailable'}`;
+
+              return (
+                <div
+                  key={iso}
+                  role="gridcell"
+                  data-date={iso}
+                  aria-label={label}
+                  aria-selected={selected}
+                  aria-disabled={!selectable}
+                  aria-current={isToday ? 'date' : undefined}
+                  tabIndex={iso === focusDate ? 0 : -1}
+                  className={`calendar-day${edge ? ' is-edge' : ''}${isToday ? ' is-today' : ''}`}
+                  style={{ borderRadius: 3 }}
+                  onClick={() => selectable && onPickDate(iso)}
+                  onFocus={() => setFocusDate(iso)}
+                  onKeyDown={(e) => onKeyDown(e, iso)}
+                >
+                  {dayNum}
+                </div>
+              );
+            })}
           </div>
         ))}
-
-        {Array.from({ length: leadingBlanks }, (_, i) => (
-          <div key={`blank-${i}`} className="calendar-empty" role="presentation" />
-        ))}
-
-        {days.map((iso) => {
-          const selectable = isSelectable(iso);
-          const selected = isInRange(iso);
-          const edge = iso === checkIn || iso === checkOut;
-          const dayNum = Number(iso.slice(8, 10));
-          const label = `${dayNum} ${monthLabel(iso)}${selectable ? '' : ' — unavailable'}`;
-
-          return (
-            <div
-              key={iso}
-              role="gridcell"
-              data-date={iso}
-              aria-label={label}
-              aria-selected={selected}
-              aria-disabled={!selectable}
-              tabIndex={iso === focusDate ? 0 : -1}
-              className={`calendar-day${edge ? ' is-edge' : ''}`}
-              style={{ borderRadius: 3 }}
-              onClick={() => selectable && onPickDate(iso)}
-              onFocus={() => setFocusDate(iso)}
-              onKeyDown={(e) => onKeyDown(e, iso)}
-            >
-              {dayNum}
-            </div>
-          );
-        })}
       </div>
 
       <p role="status" aria-live="polite" className="visually-hidden">
