@@ -2284,7 +2284,7 @@ export function onPopState(cb: (view: View) => void): () => void {
 - [ ] **Step 4: Run tests**
 
 Run: `npm test -- history`
-Expected: PASS — 8 tests.
+Expected: PASS — 14 tests (7 parse/round-trip plus the browser-history integration block added after review).
 
 - [ ] **Step 5: Add dev-server history fallback**
 
@@ -2640,7 +2640,7 @@ describe('BookingProvider', () => {
 - [ ] **Step 6: Run tests**
 
 Run: `npm test -- bookingReducer BookingProvider`
-Expected: PASS — 15 reducer tests and 4 provider tests.
+Expected: PASS — 14 reducer tests and 4 provider tests.
 
 - [ ] **Step 6: Commit**
 
