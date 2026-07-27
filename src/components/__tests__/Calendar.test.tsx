@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { Calendar } from '../Calendar';
+
+// A raw element.focus() fires the cell's onFocus, which calls setFocusDate — a
+// React state update. Outside act() that produces an "update was not wrapped in
+// act(...)" warning, which is noise that hides real problems in later suites.
+const focus = (el: HTMLElement) => act(() => el.focus());
 
 const TODAY = '2026-08-10'; // a Monday
 
@@ -64,7 +69,7 @@ describe('Calendar', () => {
   it('moves focus with the right arrow key', () => {
     setup();
     const day17 = screen.getByRole('gridcell', { name: /^17 / });
-    day17.focus();
+    focus(day17);
     fireEvent.keyDown(day17, { key: 'ArrowRight' });
     expect(screen.getByRole('gridcell', { name: /^18 / })).toHaveFocus();
   });
@@ -72,7 +77,7 @@ describe('Calendar', () => {
   it('moves focus by a week with the down arrow key', () => {
     setup();
     const day17 = screen.getByRole('gridcell', { name: /^17 / });
-    day17.focus();
+    focus(day17);
     fireEvent.keyDown(day17, { key: 'ArrowDown' });
     expect(screen.getByRole('gridcell', { name: /^24 / })).toHaveFocus();
   });
@@ -80,7 +85,7 @@ describe('Calendar', () => {
   it('selects with Enter', () => {
     const { onPickDate } = setup();
     const day17 = screen.getByRole('gridcell', { name: /^17 / });
-    day17.focus();
+    focus(day17);
     fireEvent.keyDown(day17, { key: 'Enter' });
     expect(onPickDate).toHaveBeenCalledWith('2026-08-17');
   });
@@ -136,7 +141,7 @@ describe('Calendar', () => {
   it('moves focus back a week with the up arrow', () => {
     setup();
     const day24 = screen.getByRole('gridcell', { name: /^24 / });
-    day24.focus();
+    focus(day24);
     fireEvent.keyDown(day24, { key: 'ArrowUp' });
     expect(screen.getByRole('gridcell', { name: /^17 / })).toHaveFocus();
   });
@@ -145,7 +150,7 @@ describe('Calendar', () => {
     setup();
     // 2026-08-19 is a Wednesday; the Monday-first week runs 17..23.
     const day19 = screen.getByRole('gridcell', { name: /^19 / });
-    day19.focus();
+    focus(day19);
     fireEvent.keyDown(day19, { key: 'Home' });
     expect(screen.getByRole('gridcell', { name: /^17 / })).toHaveFocus();
 
@@ -158,7 +163,7 @@ describe('Calendar', () => {
     // Day arithmetic would add 31 and land on 1 October, skipping September.
     setup({ checkIn: '2026-08-31' });
     const day31 = screen.getByRole('gridcell', { name: /^31 August/ });
-    day31.focus();
+    focus(day31);
     fireEvent.keyDown(day31, { key: 'PageDown' });
 
     expect(screen.getByText(/September 2026/i)).toBeInTheDocument();
@@ -170,7 +175,7 @@ describe('Calendar', () => {
     // March, so the key looks broken.
     setup({ checkIn: '2027-03-30' });
     const day30 = screen.getByRole('gridcell', { name: /^30 March/ });
-    day30.focus();
+    focus(day30);
     fireEvent.keyDown(day30, { key: 'PageUp' });
 
     expect(screen.getByText(/February 2027/i)).toBeInTheDocument();
@@ -181,7 +186,7 @@ describe('Calendar', () => {
     // The click path was covered; Enter and Space were not.
     const { onPickDate } = setup({ suiteId: 'celeste' });
     const sunday = screen.getByRole('gridcell', { name: /^16 / });
-    sunday.focus();
+    focus(sunday);
 
     fireEvent.keyDown(sunday, { key: 'Enter' });
     fireEvent.keyDown(sunday, { key: ' ' });
