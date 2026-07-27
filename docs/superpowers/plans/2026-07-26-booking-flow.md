@@ -2659,7 +2659,8 @@ git commit -m "feat: add booking reducer and provider"
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `SmartImage` accepting `{ src: string; alt: string; className?: string; style?: React.CSSProperties; sizes?: string }`
+- Produces: `SmartImage` accepting `{ src: string; alt: string; className?: string; style?: React.CSSProperties; sizes?: string; eager?: boolean }`
+- `eager` defaults to `false` (so images are `loading="lazy"`). Pass `eager` for above-the-fold hero photography, or the LCP image is needlessly deferred. Tasks 14 and 15 both need it.
 
 Photography carries the whole visual design, so a failed load must degrade to something intentional rather than a broken-image icon.
 
@@ -2998,9 +2999,11 @@ Expected: FAIL — cannot resolve `../Calendar`.
 - [ ] **Step 4: Implement `src/components/Calendar.tsx`**
 
 ```tsx
-import { useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 // Note: toISO is deliberately NOT imported — Calendar never calls it, and
 // `noUnusedLocals` turns an unused import into a build failure (TS6133).
+// Same for useReducedMotion: the Calendar has no animation, so there is nothing
+// to gate and the "static equivalent" requirement is satisfied vacuously.
 import { addDays, fromISO, todayISO } from '../lib/dates';
 import { isNightAvailable } from '../lib/availability';
 import './Calendar.css';
@@ -3043,6 +3046,27 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
   const [cursor, setCursor] = useState(() => startOfMonth(checkIn ?? todayIso));
   const [focusDate, setFocusDate] = useState<string>(checkIn ?? todayIso);
   const gridRef = useRef<HTMLDivElement>(null);
+  // Only a keyboard move may pull DOM focus. Without this gate the calendar
+  // would steal focus on mount and on every unrelated re-render.
+  const pendingFocus = useRef(false);
+
+  /**
+   * Focus follows the roving tabindex, so it can only be applied once the new
+   * tabIndex values are committed to the DOM.
+   *
+   * This MUST be a layout effect — not requestAnimationFrame, and not
+   * queueMicrotask. React flushes layout effects synchronously as part of the
+   * commit, so focus lands inside the same act() scope that dispatched the key
+   * event. rAF waits on jsdom's ~16ms visual clock, and a microtask needs the
+   * JS stack to unwind, which never happens inside fireEvent's synchronous
+   * act(). Both leave focus on the previous cell — and in a real browser, one
+   * frame of visible lag.
+   */
+  useLayoutEffect(() => {
+    if (!pendingFocus.current) return;
+    pendingFocus.current = false;
+    gridRef.current?.querySelector<HTMLElement>(`[data-date="${focusDate}"]`)?.focus();
+  }, [focusDate]);
 
   const days = useMemo(() => {
     const total = daysInMonth(cursor);
@@ -3064,16 +3088,15 @@ export function Calendar({ suiteId, checkIn, checkOut, onPickDate, today }: Prop
 
   function move(from: string, delta: number) {
     const next = addDays(from, delta);
+    // A zero-delta move (Home on a Monday, End on a Sunday) would leave the
+    // pending-focus flag armed with no commit to consume it, so a later
+    // unrelated re-render would steal focus.
+    if (next === from) return;
+    pendingFocus.current = true;
     setFocusDate(next);
     if (next.slice(0, 7) !== cursor.slice(0, 7)) {
       setCursor(startOfMonth(next));
     }
-    // Focus must follow the roving tabindex, which lands after the re-render.
-    requestAnimationFrame(() => {
-      gridRef.current
-        ?.querySelector<HTMLElement>(`[data-date="${next}"]`)
-        ?.focus();
-    });
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>, iso: string) {
@@ -3183,7 +3206,7 @@ function monthDay(iso: string): string {
 - [ ] **Step 5: Run tests**
 
 Run: `npm test -- Calendar`
-Expected: PASS — 12 tests. If the roving-tabindex focus assertions fail, the cause is almost always `requestAnimationFrame` not flushing in jsdom; wrap the focus call in `queueMicrotask` instead.
+Expected: PASS — 12 tests. The focus call is a layout effect for the reason given in the code comment; do not move it to `requestAnimationFrame` or `queueMicrotask` — both were tried and both fail the roving-tabindex assertions, because neither runs inside `fireEvent`'s synchronous `act()` scope.
 
 - [ ] **Step 6: Commit**
 
